@@ -1,4 +1,4 @@
-import { handleApi, type Env } from '../server/app';
+import type { Env } from '../server/app';
 
 type VercelRequest = AsyncIterable<Uint8Array | string> & {
   method: string;
@@ -17,6 +17,7 @@ export const config = { api: { bodyParser: false } };
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const env = process.env;
   try {
+    const { handleApi } = await import('../server/app');
     let backend: { BUCKET?: Env['BUCKET']; RETAIL?: Env['RETAIL']; error?: string } | undefined;
     if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {

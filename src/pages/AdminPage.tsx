@@ -94,6 +94,27 @@ const emptyProduct: Product = {
   active: true,
 };
 
+async function readAdminResponse<T extends Record<string, unknown>>(response: Response): Promise<T> {
+  const body = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    if (!response.ok) {
+      throw new Error(`Admin server returned HTTP ${response.status}. Redeploy the latest Vercel API build and check its function logs.`);
+    }
+    throw new Error("Admin server returned an invalid response.");
+  }
+  if (!response.ok) {
+    const message = data && typeof data === "object" && "error" in data && typeof data.error === "string"
+      ? data.error
+      : `Admin server returned HTTP ${response.status}.`;
+    throw new Error(message);
+  }
+  if (!data || typeof data !== "object") throw new Error("Admin server returned an invalid response.");
+  return data as T;
+}
+
 const AdminPage: React.FC = () => {
   /* -------------------------------------------------------------
      AUTH
@@ -204,17 +225,12 @@ const AdminPage: React.FC = () => {
 
   useEffect(() => {
     fetch("/api/session")
-      .then((response) => response.json().catch(() => null))
+      .then((response) => readAdminResponse<{ authenticated: boolean; configured: boolean; error?: string }>(response))
       .then((data) => {
-        if (!data) throw new Error("The admin API returned an invalid response. Redeploy the latest version.");
         setLoggedIn(Boolean(data.authenticated));
         if (!data.configured) setError(data.error || "Firebase is not configured. Set Firebase Admin credentials and ADMIN_PASSWORD on the server.");
       })
-      .catch(() =>
-        setError(
-          "Unable to connect to the admin server. Please reload and try again."
-        )
-      )
+      .catch((error) => setError(error instanceof Error ? error.message : "Unable to connect to the admin server."))
       .finally(() => setAuthReady(true));
   }, []);
 
@@ -481,11 +497,7 @@ const AdminPage: React.FC = () => {
         body: JSON.stringify({ password }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error);
-      }
+      await readAdminResponse<{ ok: boolean }>(response);
 
       setLoggedIn(true);
       setPassword("");
