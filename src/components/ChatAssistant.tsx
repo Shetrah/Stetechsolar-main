@@ -1,141 +1,16 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Bot, ChevronDown, Loader2, Send, Sparkles, X } from "lucide-react";
-import { getProducts, getProductPrice } from "../data/productStore";
-
-interface Message {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
-  sources?: { title: string; url: string }[];
+import { useEffect, useRef, useState } from 'react';
+import { Bot, ChevronDown, Loader2, MessageCircle, Send, X } from 'lucide-react';
+import { getProducts, getProductPrice } from '../data/productStore';
+import { solarGuidance, type ChatTurn } from '../data/solarGuidance';
+interface Message extends ChatTurn {id:number;mode?:'ai'|'guidance';}
+const questions=['Which solar system is suitable for a home?','How do I size a solar battery?','What should I check before buying an inverter?'];
+export default function ChatAssistant(){
+  const [open,setOpen]=useState(false);const [input,setInput]=useState('');const [loading,setLoading]=useState(false);const [messages,setMessages]=useState<Message[]>([{id:1,role:'assistant',content:'Hi! Let’s find your solar solution. Ask about equipment, catalogue prices or powering your home.'}]);const scroll=useRef<HTMLDivElement>(null);const inputRef=useRef<HTMLInputElement>(null);const pending=useRef(false);const controller=useRef<AbortController|null>(null);
+  useEffect(()=>{if(scroll.current)scroll.current.scrollTop=scroll.current.scrollHeight;},[messages,loading,open]);
+  useEffect(()=>{if(open)inputRef.current?.focus();},[open]);
+  useEffect(()=>()=>controller.current?.abort(),[]);
+  const send=async(value=input)=>{const question=value.trim().slice(0,1200);if(!question||pending.current)return;pending.current=true;setLoading(true);setInput('');const history=messages.slice(-8).map(({role,content})=>({role,content}));setMessages(current=>[...current,{id:Date.now(),role:'user',content:question}]);const abort=new AbortController();controller.current=abort;const timeout=setTimeout(()=>abort.abort(),18000);
+    const fallback=()=>solarGuidance(question,getProducts().map(p=>({name:p.name,category:p.category,description:p.description,price:getProductPrice(p)})),history);
+    try{const response=await fetch('/api/solar-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,history}),signal:abort.signal});const data=await response.json();if(response.status===429){setMessages(current=>[...current,{id:Date.now()+1,role:'assistant',content:data.error}]);return;}if(!response.ok||!data.answer)throw new Error();setMessages(current=>[...current,{id:Date.now()+1,role:'assistant',content:data.answer,mode:data.mode==='ai'?'ai':'guidance'}]);}catch{setMessages(current=>[...current,{id:Date.now()+1,role:'assistant',content:fallback(),mode:'guidance'}]);}finally{clearTimeout(timeout);pending.current=false;setLoading(false);inputRef.current?.focus();}};
+  return <>{open&&<section role="dialog" aria-label="Solar Assistant" onKeyDown={e=>{if(e.key==='Escape')setOpen(false);}} className="fixed bottom-24 right-4 z-[80] flex max-h-[calc(100dvh-120px)] w-[calc(100vw-2rem)] max-w-[410px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-chat-in sm:right-6"><div className="flex items-center justify-between bg-[#07533e] p-4 text-white"><div className="flex items-center gap-3"><div className="rounded-xl bg-lime-200 p-2.5 text-emerald-950"><Bot size={21}/></div><div><h2 className="font-bold">Solar Assistant</h2><p className="text-xs text-emerald-100">A little guidance. A brighter start.</p></div></div><button aria-label="Close chat" onClick={()=>setOpen(false)} className="rounded-full p-2 hover:bg-white/10"><X size={20}/></button></div><div ref={scroll} role="log" aria-live="polite" aria-relevant="additions" className="max-h-[48dvh] space-y-4 overflow-y-auto bg-slate-50 p-4">{messages.map(m=><div key={m.id} className={m.role==='user'?'ml-7':'mr-3'}><p className={`whitespace-pre-wrap rounded-2xl p-4 text-sm leading-6 ${m.role==='user'?'rounded-br-sm bg-emerald-800 text-white':'rounded-bl-sm border border-slate-200 bg-white text-slate-700'}`}>{m.content}</p>{m.mode==='guidance'&&<p className="mt-1 px-1 text-xs text-slate-500">Quick solar guidance · AI service unavailable</p>}</div>)}{loading&&<p role="status" className="flex items-center gap-2 text-sm text-slate-500"><Loader2 size={16} className="animate-spin"/>Preparing your answer…</p>}</div>{messages.length===1&&<div className="flex flex-col items-start gap-2 p-3">{questions.map(q=><button key={q} onClick={()=>void send(q)} className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-left text-xs font-semibold text-emerald-800 hover:bg-emerald-100">{q}</button>)}</div>}<form onSubmit={e=>{e.preventDefault();void send();}} className="flex gap-2 border-t p-3"><input ref={inputRef} aria-label="Your solar question" maxLength={1200} value={input} onChange={e=>setInput(e.target.value)} placeholder="Ask a solar question…" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-3 text-sm"/><button disabled={loading||!input.trim()} aria-label="Send question" className="rounded-xl bg-emerald-800 px-4 text-white disabled:opacity-40"><Send size={18}/></button></form><a href="https://wa.me/254717656407" target="_blank" rel="noreferrer" className="border-t py-2 text-center text-xs font-semibold text-emerald-800">Talk to the STETECH team on WhatsApp</a></section>}<button aria-label={open?'Minimize Solar Assistant':'Open Solar Assistant'} aria-expanded={open} onClick={()=>setOpen(!open)} className="fixed bottom-5 right-4 z-[81] flex items-center gap-2 rounded-full border border-white/20 bg-[#07533e] px-5 py-3.5 font-bold text-white shadow-xl hover:-translate-y-1 sm:right-6">{open?<ChevronDown size={21}/>:<MessageCircle size={21}/>}<span className="hidden text-sm sm:inline">Solar Assistant</span></button></>;
 }
-
-const quickQuestions = [
-  "Which solar system is suitable for a home?",
-  "How do I size a solar battery?",
-  "What should I check before buying an inverter?",
-];
-
-const ChatAssistant: React.FC = () => {
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 1,
-      role: "assistant",
-      content:
-        "Hello. I’m the STETECH Solar Assistant. I can help you understand solar equipment, compare products in our catalogue, and guide you toward a suitable solution. Ask me anything about solar power, batteries, inverters, pumps or installation planning.",
-    },
-  ]);
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  const send = async (text = input) => {
-    const question = text.trim();
-    if (!question || loading) return;
-    setInput("");
-    setMessages((current) => [...current, { id: Date.now(), role: "user", content: question }]);
-    setLoading(true);
-
-    try {
-      const products = getProducts().slice(0, 180).map((product) => ({
-        name: product.name,
-        category: product.category,
-        price: getProductPrice(product),
-        description: product.description,
-        stock: product.stock ?? 0,
-      }));
-
-      const response = await fetch("/api/solar-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, products }),
-      });
-
-      if (!response.ok) throw new Error("AI service unavailable");
-      const data = await response.json();
-      setMessages((current) => [
-        ...current,
-        {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: data.answer || "I could not generate a response right now. Please contact our solar team for assistance.",
-          sources: Array.isArray(data.sources) ? data.sources : undefined,
-        },
-      ]);
-    } catch {
-      setMessages((current) => [
-        ...current,
-        {
-          id: Date.now() + 1,
-          role: "assistant",
-          content:
-            "I’m temporarily unable to reach the research service. You can still browse our live catalogue for products and prices, or use the WhatsApp button to speak with the STETECH team.",
-        },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <>
-      {open && (
-        <div className="fixed bottom-24 right-4 z-[80] flex w-[calc(100vw-2rem)] max-w-[420px] origin-bottom-right flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_30px_100px_rgba(15,23,42,.25)] animate-chat-in sm:right-6">
-          <div className="flex items-center justify-between bg-slate-950 px-5 py-4 text-white">
-            <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-2xl bg-emerald-400 text-slate-950"><Bot className="h-5 w-5" /></div>
-              <div>
-                <p className="font-black">STETECH Solar Assistant</p>
-                <p className="text-xs text-slate-400">Catalogue-aware solar guidance</p>
-              </div>
-            </div>
-            <button onClick={() => setOpen(false)} className="rounded-full p-2 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="Close chat"><X className="h-5 w-5" /></button>
-          </div>
-
-          <div className="max-h-[55vh] space-y-3 overflow-y-auto bg-slate-50 p-4">
-            {messages.map((message) => (
-              <div key={message.id} className={message.role === "user" ? "ml-auto max-w-[88%]" : "mr-auto max-w-[94%]"}>
-                <div className={message.role === "user" ? "rounded-2xl rounded-br-md bg-slate-950 px-4 py-3 text-sm leading-6 text-white" : "rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm"}>
-                  {message.content}
-                </div>
-                {message.sources?.length ? (
-                  <div className="mt-2 space-y-1 px-1">
-                    {message.sources.slice(0, 3).map((source) => (
-                      <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="block truncate text-xs font-semibold text-emerald-700 hover:underline">Source: {source.title}</a>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
-            {loading && <div className="flex items-center gap-2 text-xs font-semibold text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Researching and preparing a response…</div>}
-            <div ref={endRef} />
-          </div>
-
-          {messages.length === 1 && (
-            <div className="flex gap-2 overflow-x-auto border-t border-slate-100 bg-white px-4 py-3">
-              {quickQuestions.map((question) => (
-                <button key={question} onClick={() => send(question)} className="shrink-0 rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">{question}</button>
-              ))}
-            </div>
-          )}
-
-          <form onSubmit={(event) => { event.preventDefault(); void send(); }} className="flex gap-2 border-t border-slate-200 bg-white p-3">
-            <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Ask a solar question…" className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-emerald-400 focus:bg-white" />
-            <button disabled={!input.trim() || loading} className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-emerald-500 text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Send message"><Send className="h-4 w-4" /></button>
-          </form>
-        </div>
-      )}
-
-      <button onClick={() => setOpen((value) => !value)} className="fixed bottom-5 right-4 z-[81] flex items-center gap-2 rounded-full border border-white/20 bg-slate-950 px-4 py-3 text-sm font-black text-white shadow-[0_16px_45px_rgba(15,23,42,.3)] transition hover:-translate-y-1 hover:bg-emerald-600 sm:right-6" aria-label="Open solar assistant">
-        {open ? <ChevronDown className="h-5 w-5" /> : <Sparkles className="h-5 w-5 text-emerald-300" />}
-        <span className="hidden sm:inline">Solar Assistant</span>
-      </button>
-    </>
-  );
-};
-
-export default ChatAssistant;

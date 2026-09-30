@@ -5,6 +5,7 @@ import {
   Check,
   Download,
   Edit3,
+  Images,
   LayoutDashboard,
   LogOut,
   PackagePlus,
@@ -24,13 +25,15 @@ import {
   getProductPrice,
   getSales,
   removeProduct,
-  saveProducts,
+  syncProducts,
+  syncSales,
   SaleRecord,
   upsertProduct,
 } from "../data/productStore";
 import { Cog } from "lucide-react";
+import GalleryAdmin from '../components/GalleryAdmin';
 
-type Tab = "overview" | "products" | "sales";
+type Tab = "overview" | "products" | "sales" | "gallery";
 
 const emptyProduct: Product = {
   id: 0,
@@ -47,10 +50,11 @@ const emptyProduct: Product = {
   active: true,
 };
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || "stetech2026";
-
 const AdminPage: React.FC = () => {
-  const [loggedIn, setLoggedIn] = useState(() => sessionStorage.getItem("stetech-admin") === "true");
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const [password, setPassword] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
   const [products, setProducts] = useState<Product[]>(getAllProducts());
@@ -74,6 +78,11 @@ const AdminPage: React.FC = () => {
   };
 
   useEffect(() => {
+    fetch('/api/session').then(r => r.json()).then(data => setLoggedIn(data.authenticated)).catch(() => setError('Unable to connect to the admin server. Please reload and try again.')).finally(() => setAuthReady(true));
+  }, []);
+  useEffect(() => { if (loggedIn) { void syncProducts(); void syncSales().catch(e => setError(e.message)); } }, [loggedIn]);
+
+  useEffect(() => {
     const handler = () => refresh();
     window.addEventListener("stetech-products-updated", handler);
     window.addEventListener("stetech-sales-updated", handler);
@@ -93,20 +102,17 @@ const AdminPage: React.FC = () => {
 
   const filteredProducts = products.filter((p) => `${p.name} ${p.category}`.toLowerCase().includes(productSearch.toLowerCase()));
 
-  const login = (e: React.FormEvent) => {
+  const login = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === ADMIN_PASSWORD) {
-      sessionStorage.setItem("stetech-admin", "true");
-      setLoggedIn(true);
-      setPassword("");
-    } else {
-      alert("Incorrect admin password.");
-    }
+    setSaving(true); setError('');
+    try { const response = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setLoggedIn(true); setPassword(''); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Sign in failed. Please try again.'); }
+    finally { setSaving(false); }
   };
 
-  const logout = () => {
-    sessionStorage.removeItem("stetech-admin");
-    setLoggedIn(false);
+  const logout = async () => {
+    try { const response = await fetch('/api/session', { method: 'DELETE' }); if (!response.ok) throw new Error('Could not sign out.'); setLoggedIn(false); setTab('overview'); setError(''); }
+    catch { setError('Could not sign out. Please try again.'); }
   };
 
   const openNewProduct = () => {
@@ -119,35 +125,37 @@ const AdminPage: React.FC = () => {
     setShowProductForm(true);
   };
 
-  const saveProduct = (e: React.FormEvent) => {
+  const saveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
+    setSaving(true); setError('');
     const price = Number((editingProduct.specifications.Price || "").replace(/[^\d.]/g, "")) || 0;
     const product = {
       ...editingProduct,
       specifications: { ...editingProduct.specifications, Price: `KSh ${price.toLocaleString("en-KE")}` },
-      stock: Number(editingProduct.stock || 0),
+      stock: editingProduct.stock,
       costPrice: Number(editingProduct.costPrice || 0),
       active: true,
     };
-    upsertProduct(product);
-    refresh();
-    setShowProductForm(false);
+    try { await upsertProduct(product); refresh(); setShowProductForm(false); }
+    catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
   };
 
-  const deleteProduct = (product: Product) => {
+  const deleteProduct = async (product: Product) => {
     if (window.confirm(`Hide "${product.name}" from the public catalogue?`)) {
-      removeProduct(product.id);
-      refresh();
+      try { await removeProduct(product.id); refresh(); } catch (e) { setError((e as Error).message); }
     }
   };
 
-  const recordSale = (e: React.FormEvent) => {
+  const recordSale = async (e: React.FormEvent) => {
     e.preventDefault();
     const product = products.find((p) => p.id === Number(saleForm.productId));
     if (!product) return;
     const quantity = Math.max(1, Number(saleForm.quantity) || 1);
     const unitPrice = Number(saleForm.unitPrice) || getNumericPrice(product);
-    addSale({
+    setSaving(true); setError('');
+    try { await addSale({
       productId: product.id,
       productName: product.name,
       quantity,
@@ -159,6 +167,7 @@ const AdminPage: React.FC = () => {
     });
     setSaleForm({ productId: "", quantity: "1", customerName: "", customerPhone: "", location: "", paymentStatus: "paid", unitPrice: "" });
     refresh();
+    } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
   };
 
   const exportSales = () => {
@@ -172,6 +181,7 @@ const AdminPage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  if (!authReady) return <main className="min-h-screen p-20 text-center">Loading admin portal…</main>;
   if (!loggedIn) {
     return (
       <main className="min-h-[calc(100vh-5rem)] bg-slate-950 px-4 py-16">
@@ -180,13 +190,14 @@ const AdminPage: React.FC = () => {
             <img src="/stetech solar.png" alt="STETECH" className="mx-auto h-16 w-16 object-contain" />
             <p className="mt-5 text-xs font-black uppercase tracking-[.2em] text-emerald-600">STETECH control room</p>
             <h1 className="mt-2 text-3xl font-black text-slate-950">Admin sign in</h1>
-            <p className="mt-2 text-sm text-slate-500">Manage your catalogue, inventory and sales records.</p>
+            <p className="mt-2 text-sm text-slate-500">Manage your gallery, products and sales.</p>
           </div>
           <form onSubmit={login} className="space-y-4">
+            {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             <label className="block"><span className="mb-2 block text-sm font-bold">Admin password</span><input type="password" autoFocus required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-4 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-50" placeholder="Enter password" /></label>
-            <button className="w-full rounded-2xl bg-slate-950 px-5 py-4 font-black text-white hover:bg-emerald-600">Enter dashboard</button>
+            <button disabled={saving} className="w-full rounded-2xl bg-emerald-800 px-5 py-4 font-bold text-white disabled:opacity-50">{saving ? 'Signing in…' : 'Enter dashboard'}</button>
           </form>
-          <p className="mt-6 text-center text-xs text-slate-400">For production, set <code>VITE_ADMIN_PASSWORD</code> in your environment and connect a server-side authentication/database.</p>
+          <a href="/" className="mt-6 block text-center text-sm text-emerald-700">Return to website</a>
         </div>
       </main>
     );
@@ -196,19 +207,23 @@ const AdminPage: React.FC = () => {
     <main className="min-h-[calc(100vh-5rem)] bg-slate-50">
       <div className="mx-auto max-w-[1500px] px-4 py-7 sm:px-6 lg:px-8">
         <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-center">
-          <div><p className="text-xs font-black uppercase tracking-[.2em] text-emerald-600">STETECH back office</p><h1 className="mt-1 text-3xl font-black text-slate-950">Sales & catalogue</h1></div>
+          <div><p className="text-xs font-black uppercase tracking-[.2em] text-emerald-600">STETECH back office</p><h1 className="mt-1 text-3xl font-black text-slate-950">Your website, managed.</h1></div>
           <button onClick={logout} className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-600"><LogOut className="mr-2 inline h-4 w-4" /> Sign out</button>
         </div>
 
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-2 sm:grid-cols-3">
+        {error && <p role="alert" className="mb-4 rounded-xl bg-red-50 p-4 text-red-700">{error}</p>}
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-2 sm:grid-cols-4">
           {[
             ["overview", LayoutDashboard, "Overview"],
             ["products", Boxes, "Products & stock"],
             ["sales", BarChart3, "Sales records"],
+            ["gallery", Images, "Gallery"],
           ].map(([key, Icon, label]) => (
             <button key={String(key)} onClick={() => setTab(key as Tab)} className={`rounded-xl px-4 py-3 text-left text-sm font-black transition ${tab === key ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}><Icon className="mr-2 inline h-4 w-4" />{String(label)}</button>
           ))}
         </div>
+
+        {tab === 'gallery' && <GalleryAdmin />}
 
         {tab === "overview" && (
           <div className="mt-6 space-y-6">
