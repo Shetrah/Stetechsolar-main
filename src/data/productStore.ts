@@ -152,7 +152,7 @@ export async function syncInventoryMovements() {
 export async function syncPayments() {
 	await requireAdmin();
 	const [paymentSnapshot, transactionSnapshot] = await Promise.all([
-		getDocs(query(collection(firebaseDb, collectionNames.payments), orderBy('createdAt', 'desc'), limit(20000))),
+		getDocs(query(collection(firebaseDb, collectionNames.payments), orderBy('createdAt', 'desc'), limit(10000))),
 		getDocs(query(collection(firebaseDb, collectionNames.transactions), orderBy('soldAt', 'desc'), limit(10000))),
 	]);
 	payments = paymentSnapshot.docs.map((item) => item.data() as PaymentRecord);
@@ -284,7 +284,7 @@ export async function addSales(input: {
 	sales = [...result.records, ...sales].slice(0, 10000);
 	movements = [...result.stockMovements, ...movements].slice(0, 10000);
 	transactions = [result.summary, ...transactions].slice(0, 10000);
-	if (result.payment) payments = [result.payment, ...payments].slice(0, 20000);
+	if (result.payment) payments = [result.payment, ...payments].slice(0, 10000);
 	window.dispatchEvent(new Event('stetech-sales-updated'));
 	window.dispatchEvent(new Event('stetech-products-updated'));
 	window.dispatchEvent(new Event('stetech-inventory-updated'));
@@ -325,7 +325,7 @@ export async function recordPayment(input: { transactionId: string; amount: numb
 		transaction.set(doc(firebaseDb, collectionNames.payments, payment.id), payment);
 		return { payment, summary: updatedSummary, updatedSales };
 	});
-	payments = [result.payment, ...payments].slice(0, 20000);
+	payments = [result.payment, ...payments].slice(0, 10000);
 	transactions = [result.summary, ...transactions.filter((item) => item.id !== result.summary.id)].slice(0, 10000);
 	const byId = new Map(result.updatedSales.map((sale) => [sale.id, sale]));
 	sales = sales.map((sale) => byId.get(sale.id) || sale);
