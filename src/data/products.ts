@@ -13,6 +13,7 @@ export interface Product {
   color: string;
   stock?: number;
   costPrice?: number;
+  reorderLevel?: number;
   active?: boolean;
 }
 

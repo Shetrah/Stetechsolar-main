@@ -3,7 +3,6 @@ import {
   BarChart3,
   Boxes,
   Check,
-  ChevronDown,
   Download,
   Edit3,
   Images,
@@ -11,7 +10,6 @@ import {
   LogOut,
   Menu,
   Package,
-  PackageCheck,
   PackagePlus,
   Plus,
   RefreshCw,
@@ -33,15 +31,27 @@ import {
 import { Product } from "../data/products";
 import {
   addSale,
+  addSales,
+  adjustInventory,
   formatKES,
   getAllProducts,
+  getInventoryMovements,
+  getPayments,
   getNumericPrice,
   getProductPrice,
   getSales,
+  getTransactions,
+  recordPayment,
   removeProduct,
   syncProducts,
   syncSales,
+  syncInventoryMovements,
+  syncPayments,
+  InventoryMovement,
+  PaymentMethod,
+  PaymentRecord,
   SaleRecord,
+  TransactionSummary,
   upsertProduct,
 } from "../data/productStore";
 
@@ -54,6 +64,7 @@ type Tab =
   | "inventory"
   | "products"
   | "sales"
+  | "reports"
   | "gallery";
 
 type CartItem = {
@@ -79,6 +90,7 @@ const emptyProduct: Product = {
   color: "from-slate-700 to-emerald-500",
   stock: 0,
   costPrice: 0,
+  reorderLevel: 5,
   active: true,
 };
 
@@ -101,6 +113,12 @@ const AdminPage: React.FC = () => {
 
   const [products, setProducts] = useState<Product[]>(getAllProducts());
   const [sales, setSales] = useState<SaleRecord[]>(getSales());
+    const [payments, setPayments] = useState<PaymentRecord[]>(getPayments());
+    const [transactions, setTransactions] = useState<TransactionSummary[]>(getTransactions());
+    const [paymentTransaction, setPaymentTransaction] = useState<TransactionSummary | null>(null);
+    const [paymentAmount, setPaymentAmount] = useState("");
+    const [paymentEntryMethod, setPaymentEntryMethod] = useState<Exclude<PaymentMethod, "Credit">>("Cash");
+  const [movements, setMovements] = useState<InventoryMovement[]>(getInventoryMovements());
 
   /* -------------------------------------------------------------
      PRODUCT STATE
@@ -124,8 +142,8 @@ const AdminPage: React.FC = () => {
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
 
-  const [paymentStatus, setPaymentStatus] =
-    useState<SaleRecord["paymentStatus"]>("paid");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash");
+  const [amountPaid, setAmountPaid] = useState("0");
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
 
@@ -157,7 +175,15 @@ const AdminPage: React.FC = () => {
     customerPhone: "",
     location: "",
     paymentStatus: "paid" as SaleRecord["paymentStatus"],
+    paymentMethod: "Cash" as PaymentMethod,
+    amountPaid: "",
     unitPrice: "",
+  });
+
+  const [reportPeriod, setReportPeriod] = useState<"day" | "month">("month");
+  const [reportDate, setReportDate] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   });
 
   /* -------------------------------------------------------------
@@ -167,6 +193,9 @@ const AdminPage: React.FC = () => {
   const refresh = () => {
     setProducts(getAllProducts());
     setSales(getSales());
+      setPayments(getPayments());
+      setTransactions(getTransactions());
+    setMovements(getInventoryMovements());
   };
 
   /* -------------------------------------------------------------
@@ -175,8 +204,12 @@ const AdminPage: React.FC = () => {
 
   useEffect(() => {
     fetch("/api/session")
-      .then((r) => r.json())
-      .then((data) => setLoggedIn(data.authenticated))
+      .then((response) => response.json().catch(() => null))
+      .then((data) => {
+        if (!data) throw new Error("The admin API returned an invalid response. Redeploy the latest version.");
+        setLoggedIn(Boolean(data.authenticated));
+        if (!data.configured) setError(data.error || "Firebase is not configured. Set Firebase Admin credentials and ADMIN_PASSWORD on the server.");
+      })
       .catch(() =>
         setError(
           "Unable to connect to the admin server. Please reload and try again."
@@ -196,6 +229,12 @@ const AdminPage: React.FC = () => {
     void syncSales().catch((e) =>
       setError(e instanceof Error ? e.message : "Unable to sync sales.")
     );
+    void syncInventoryMovements().catch((e) =>
+      setError(e instanceof Error ? e.message : "Unable to sync inventory movements.")
+    );
+    void syncPayments().catch((e) =>
+      setError(e instanceof Error ? e.message : "Unable to sync payment records.")
+    );
   }, [loggedIn]);
 
   useEffect(() => {
@@ -203,10 +242,12 @@ const AdminPage: React.FC = () => {
 
     window.addEventListener("stetech-products-updated", handler);
     window.addEventListener("stetech-sales-updated", handler);
+  window.addEventListener("stetech-payments-updated", handler);
 
     return () => {
       window.removeEventListener("stetech-products-updated", handler);
       window.removeEventListener("stetech-sales-updated", handler);
+      window.removeEventListener("stetech-payments-updated", handler);
     };
   }, []);
 
@@ -260,7 +301,7 @@ const AdminPage: React.FC = () => {
     );
 
     const lowStock = products.filter(
-      (product) => Number(product.stock || 0) <= 5
+      (product) => Number(product.stock || 0) <= Number(product.reorderLevel ?? 5)
     ).length;
 
     const outOfStock = products.filter(
@@ -270,6 +311,27 @@ const AdminPage: React.FC = () => {
     const activeProducts = products.filter(
       (product) => product.active !== false
     ).length;
+    const today = new Date().toDateString();
+    const todaySales = sales.filter(
+      (sale) => new Date(sale.soldAt).toDateString() === today
+    );
+    const todayRevenue = todaySales.reduce(
+      (sum, sale) => sum + Number(sale.total || 0),
+      0
+    );
+    const todayTransactions = new Set(
+      todaySales.map((sale) => sale.transactionId || sale.id)
+    ).size;
+    const pendingPayments = sales.reduce((sum, sale) => {
+      const paid = Number(sale.amountPaid ?? (sale.paymentStatus === "paid" ? sale.total : 0));
+      return sum + Math.max(0, Number(sale.total || 0) - paid);
+    }, 0);
+    const grossProfit = sales.reduce((sum, sale) => {
+      const cost = Number(
+        sale.unitCost ?? products.find((product) => product.id === sale.productId)?.costPrice ?? 0
+      );
+      return sum + Number(sale.total || 0) - cost * Number(sale.quantity || 0);
+    }, 0);
 
     return {
       revenue,
@@ -280,6 +342,10 @@ const AdminPage: React.FC = () => {
       lowStock,
       outOfStock,
       activeProducts,
+      todayRevenue,
+      todayTransactions,
+      pendingPayments,
+      grossProfit,
     };
   }, [products, sales]);
 
@@ -351,6 +417,48 @@ const AdminPage: React.FC = () => {
   const cartItems = useMemo(() => {
     return cart.reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
+
+  const reportSales = useMemo(() => sales.filter((sale) => {
+    const sold = new Date(sale.soldAt);
+    const key = reportPeriod === "day"
+      ? `${sold.getFullYear()}-${String(sold.getMonth() + 1).padStart(2, "0")}-${String(sold.getDate()).padStart(2, "0")}`
+      : `${sold.getFullYear()}-${String(sold.getMonth() + 1).padStart(2, "0")}`;
+    return key === (reportPeriod === "day" ? reportDate : reportDate.slice(0, 7));
+  }), [sales, reportDate, reportPeriod]);
+
+  const reportTotals = useMemo(() => {
+    const revenue = reportSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+    const cost = reportSales.reduce((sum, sale) => {
+      const unitCost = Number(sale.unitCost ?? products.find((product) => product.id === sale.productId)?.costPrice ?? 0);
+      return sum + unitCost * Number(sale.quantity || 0);
+    }, 0);
+    const methods: Exclude<PaymentMethod, "Credit">[] = ["Cash", "M-Pesa", "Bank"];
+    return {
+      revenue,
+      grossProfit: revenue - cost,
+      paymentBreakdown: methods.map((method) => ({
+        method,
+        total: payments.filter((payment) => payment.method === method && (() => {
+          const paid = new Date(payment.createdAt);
+          const dateKey = reportPeriod === "day"
+            ? `${paid.getFullYear()}-${String(paid.getMonth() + 1).padStart(2, "0")}-${String(paid.getDate()).padStart(2, "0")}`
+            : `${paid.getFullYear()}-${String(paid.getMonth() + 1).padStart(2, "0")}`;
+          return dateKey === (reportPeriod === "day" ? reportDate : reportDate.slice(0, 7));
+        })()).reduce((sum, payment) => sum + payment.amount, 0),
+      })).concat({
+        method: "Credit",
+        total: transactions.filter((transaction) => reportSales.some((sale) => sale.transactionId === transaction.id))
+          .reduce((sum, transaction) => sum + transaction.balanceDue, 0),
+      }),
+    };
+  }, [reportSales, payments, transactions, reportDate, reportPeriod, products]);
+
+  const paymentBalances = useMemo(() => ({
+    cash: payments.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amount, 0),
+    mpesa: payments.filter((payment) => payment.method === "M-Pesa").reduce((sum, payment) => sum + payment.amount, 0),
+    bank: payments.filter((payment) => payment.method === "Bank").reduce((sum, payment) => sum + payment.amount, 0),
+    credit: transactions.reduce((sum, transaction) => sum + Math.max(0, transaction.balanceDue), 0),
+  }), [payments, transactions]);
 
   /* -------------------------------------------------------------
      LOGIN
@@ -464,7 +572,8 @@ const AdminPage: React.FC = () => {
       },
       stock: Number(editingProduct.stock || 0),
       costPrice: Number(editingProduct.costPrice || 0),
-      active: true,
+      reorderLevel: Number(editingProduct.reorderLevel ?? 5),
+      active: editingProduct.active !== false,
     };
 
     try {
@@ -601,39 +710,59 @@ const AdminPage: React.FC = () => {
      POS CHECKOUT
   ------------------------------------------------------------- */
 
+  const printReceipt = (
+    target: Window | null,
+    records: SaleRecord[],
+    customer: string,
+    phone: string,
+    location: string,
+    method: PaymentMethod,
+    total: number,
+    amountReceived: number,
+    referenceOverride?: string
+  ) => {
+    if (!target) {
+      setError("Sale completed. Allow pop-ups to print the receipt.");
+      return;
+    }
+    const escape = (value: unknown) => String(value).replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+    })[character] || character);
+    const rows = records.map((record) => `<tr><td>${escape(record.productName)}<small>${record.quantity} × ${formatKES(record.unitPrice)}</small></td><td>${formatKES(record.total)}</td></tr>`).join("");
+    const receiptStatus = amountReceived >= total ? "PAID" : amountReceived > 0 ? "PARTIALLY PAID" : "CREDIT";
+    const logo = escape(new URL("/stetech solar.png", window.location.origin).href);
+    const reference = escape(referenceOverride || records[0]?.transactionId || records[0]?.id || "");
+    target.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>STETECH e-Receipt</title><style>*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#10201a;margin:0;padding:28px}.receipt{max-width:520px;margin:auto;border:1px solid #dce6e0;border-radius:12px;overflow:hidden}.letterhead{display:flex;align-items:center;gap:14px;padding:22px;background:#062a22;color:#fff}.logo{width:58px;height:58px;object-fit:contain;background:#fff;border-radius:10px;padding:4px}.company{font-size:17px;font-weight:800;letter-spacing:.6px}.details{font-size:11px;line-height:1.55;color:#c9d8d1;margin-top:5px}.body{padding:22px}.title{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dce6e0;padding-bottom:14px}.title h1{font-size:20px;margin:0}.badge{font-size:10px;font-weight:800;letter-spacing:.5px;color:#075b3e;background:#e3f5eb;border-radius:20px;padding:7px 9px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0;font-size:12px}.meta span{display:block;color:#63736c;margin-bottom:3px}.meta strong{overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;margin:18px 0}th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#63736c;text-align:left;padding:9px 0;border-bottom:1px solid #cbd8d1}th:last-child,td:last-child{text-align:right}td{padding:11px 0;border-bottom:1px solid #e6ede9;font-size:12px}td small{display:block;color:#63736c;margin-top:4px}.totals{margin:16px 0 0 auto;max-width:260px}.line{display:flex;justify-content:space-between;padding:5px 0;color:#45564e}.grand{font-size:17px;font-weight:800;color:#10201a;border-top:1px solid #cbd8d1;margin-top:7px;padding-top:11px}.thanks{border-top:1px dashed #cbd8d1;margin-top:20px;padding-top:15px;text-align:center;color:#63736c;font-size:11px}.thanks strong{display:block;color:#075b3e;margin-bottom:4px}@media print{body{padding:0}.receipt{border:0;max-width:none}.letterhead{-webkit-print-color-adjust:exact;print-color-adjust:exact}.badge{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><article class="receipt"><header class="letterhead"><img class="logo" src="${logo}" alt="STETECH Solar logo"><div><div class="company">STETECH SOLAR TECHNOLOGY</div><div class="details">Uhuru Market Business Complex, Block R41<br>Nyerere Road, Kisumu, Kenya<br>Phone: +254 717 656 407</div></div></header><main class="body"><div class="title"><h1>Electronic receipt</h1><span class="badge">${receiptStatus}</span></div><div class="meta"><div><span>Receipt reference</span><strong>${reference}</strong></div><div><span>Date and time</span><strong>${escape(new Date().toLocaleString())}</strong></div><div><span>Customer</span><strong>${escape(customer || "Walk-in customer")}</strong></div><div><span>Phone</span><strong>${escape(phone || "Not provided")}</strong></div><div><span>Payment method</span><strong>${escape(method)}</strong></div><div><span>Location</span><strong>${escape(location || "Not provided")}</strong></div></div><table><thead><tr><th>Item</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table><div class="totals"><div class="line"><span>Total</span><strong>${formatKES(total)}</strong></div><div class="line"><span>Amount received</span><strong>${formatKES(amountReceived)}</strong></div><div class="line grand"><span>Balance due</span><span>${formatKES(Math.max(0, total - amountReceived))}</span></div></div><div class="thanks"><strong>Thank you for choosing STETECH Solar</strong>System-generated receipt · Keep this reference for payment follow-up.</div></main></article><script>window.onload=()=>window.print()</script></body></html>`);
+    target.document.close();
+  };
+
   const checkout = async () => {
     if (!cart.length) {
       setError("Your cart is empty.");
       return;
     }
 
+    const receiptWindow = window.open("", "_blank", "width=440,height=680");
     setSaving(true);
     setError("");
 
     try {
-      /*
-       * Add every cart line as a sale.
-       * Existing productStore handles the stock reduction.
-       */
-      for (const item of cart) {
-        await addSale({
-          productId: item.productId,
-          productName: item.productName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          customerName:
-            customerName.trim() || "Walk-in customer",
-          customerPhone,
-          location: customerLocation,
-          paymentStatus,
-        });
-      }
+      const records = await addSales({
+        items: cart.map(({ productId, quantity, unitPrice }) => ({ productId, quantity, unitPrice })),
+        customerName: customerName.trim() || "Walk-in customer",
+        customerPhone,
+        location: customerLocation,
+        paymentMethod,
+        amountPaid: Math.max(0, Math.min(cartSubtotal, Number(amountPaid) || 0)),
+      });
+      printReceipt(receiptWindow, records, customerName.trim() || "Walk-in customer", customerPhone, customerLocation, paymentMethod, cartSubtotal, Math.max(0, Math.min(cartSubtotal, Number(amountPaid) || 0)));
 
       setCart([]);
       setCustomerName("");
       setCustomerPhone("");
       setCustomerLocation("");
-      setPaymentStatus("paid");
+      setPaymentMethod("Cash");
+      setAmountPaid("0");
 
       setCheckoutOpen(false);
 
@@ -644,6 +773,7 @@ const AdminPage: React.FC = () => {
 
       setTab("sales");
     } catch (e) {
+      receiptWindow?.close();
       setError(
         e instanceof Error
           ? e.message
@@ -685,6 +815,9 @@ const AdminPage: React.FC = () => {
     const unitPrice =
       Number(saleForm.unitPrice) ||
       getNumericPrice(product);
+    const amountReceived = saleForm.amountPaid === ""
+      ? saleForm.paymentMethod === "Credit" ? 0 : quantity * unitPrice
+      : Number(saleForm.amountPaid) || 0;
 
     setSaving(true);
     setError("");
@@ -692,7 +825,6 @@ const AdminPage: React.FC = () => {
     try {
       await addSale({
         productId: product.id,
-        productName: product.name,
         quantity,
         unitPrice,
         customerName:
@@ -700,6 +832,8 @@ const AdminPage: React.FC = () => {
         customerPhone: saleForm.customerPhone,
         location: saleForm.location,
         paymentStatus: saleForm.paymentStatus,
+        paymentMethod: saleForm.paymentMethod,
+        amountPaid: amountReceived,
       });
 
       setSaleForm({
@@ -709,6 +843,8 @@ const AdminPage: React.FC = () => {
         customerPhone: "",
         location: "",
         paymentStatus: "paid",
+        paymentMethod: "Cash",
+        amountPaid: "",
         unitPrice: "",
       });
 
@@ -719,6 +855,41 @@ const AdminPage: React.FC = () => {
           ? e.message
           : "Unable to record sale."
       );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submitPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentTransaction || saving) return;
+    const amount = Number(paymentAmount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > paymentTransaction.balanceDue) {
+      setError(`Enter an amount up to ${formatKES(paymentTransaction.balanceDue)}.`);
+      return;
+    }
+    const receiptWindow = window.open("", "_blank", "width=440,height=680");
+    setSaving(true);
+    setError("");
+    try {
+      const payment = await recordPayment({ transactionId: paymentTransaction.id, amount, method: paymentEntryMethod });
+      printReceipt(
+        receiptWindow,
+        sales.filter((sale) => sale.transactionId === paymentTransaction.id),
+        paymentTransaction.customerName,
+        paymentTransaction.customerPhone,
+        paymentTransaction.location,
+        paymentEntryMethod,
+        paymentTransaction.total,
+        paymentTransaction.amountPaid + amount,
+        payment.id
+      );
+      setPaymentTransaction(null);
+      setPaymentAmount("");
+      refresh();
+    } catch (e) {
+      receiptWindow?.close();
+      setError(e instanceof Error ? e.message : "Unable to save payment.");
     } finally {
       setSaving(false);
     }
@@ -751,36 +922,20 @@ const AdminPage: React.FC = () => {
       Number(inventoryQuantity) || 0
     );
 
-    if (quantity <= 0) {
+    if (quantity < 0 || (inventoryAction !== "set" && quantity === 0)) {
       setError("Enter a valid quantity.");
       return;
-    }
-
-    const currentStock = Number(
-      inventoryProduct.stock || 0
-    );
-
-    let newStock = currentStock;
-
-    if (inventoryAction === "receive") {
-      newStock = currentStock + quantity;
-    }
-
-    if (inventoryAction === "remove") {
-      newStock = Math.max(0, currentStock - quantity);
-    }
-
-    if (inventoryAction === "set") {
-      newStock = quantity;
     }
 
     setSaving(true);
     setError("");
 
     try {
-      await upsertProduct({
-        ...inventoryProduct,
-        stock: newStock,
+      await adjustInventory({
+        productId: inventoryProduct.id,
+        action: inventoryAction,
+        quantity,
+        note: inventoryNote,
       });
 
       refresh();
@@ -802,16 +957,19 @@ const AdminPage: React.FC = () => {
 
   const exportSales = () => {
     const header =
-      "Sale ID,Date,Product,Quantity,Unit Price,Total,Customer,Phone,Location,Payment Status";
+      "Sale ID,Transaction ID,Date,Product,Quantity,Unit Price,Total,Amount Paid,Payment Method,Customer,Phone,Location,Payment Status";
 
     const rows = sales.map((s) =>
       [
         s.id,
+        s.transactionId || s.id,
         new Date(s.soldAt).toLocaleString(),
         s.productName,
         s.quantity,
         s.unitPrice,
         s.total,
+        s.amountPaid ?? (s.paymentStatus === "paid" ? s.total : 0),
+        s.paymentMethod || "Cash",
         s.customerName,
         s.customerPhone,
         s.location,
@@ -923,6 +1081,11 @@ const AdminPage: React.FC = () => {
       key: "sales",
       icon: BarChart3,
       label: "Sales",
+    },
+    {
+      key: "reports",
+      icon: TrendingUp,
+      label: "Reports",
     },
     {
       key: "gallery",
@@ -1221,6 +1384,9 @@ const AdminPage: React.FC = () => {
                   {tab === "sales" &&
                     "Sales Records"}
 
+                  {tab === "reports" &&
+                    "Business Reports"}
+
                   {tab === "gallery" &&
                     "Website Gallery"}
                 </h1>
@@ -1275,16 +1441,16 @@ const AdminPage: React.FC = () => {
               <div className="space-y-6">
                 {/* KPI */}
 
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
                   <div className="rounded-3xl bg-slate-950 p-6 text-white shadow-xl">
                     <div className="flex items-start justify-between">
                       <div>
                         <p className="text-sm font-bold text-slate-400">
-                          Sales revenue
+                          Today's revenue
                         </p>
 
                         <p className="mt-3 text-3xl font-black">
-                          {formatKES(stats.revenue)}
+                          {formatKES(stats.todayRevenue)}
                         </p>
                       </div>
 
@@ -1294,7 +1460,7 @@ const AdminPage: React.FC = () => {
                     </div>
 
                     <p className="mt-4 text-xs text-slate-500">
-                      From recorded POS transactions
+                          From today's recorded sales
                     </p>
                   </div>
 
@@ -1302,11 +1468,11 @@ const AdminPage: React.FC = () => {
                     <div className="flex items-start justify-between">
                       <div>
                         <p className="text-sm font-bold text-slate-500">
-                          Units sold
+                          Today's sales
                         </p>
 
                         <p className="mt-3 text-3xl font-black text-slate-950">
-                          {stats.units.toLocaleString()}
+                          {stats.todayTransactions.toLocaleString()}
                         </p>
                       </div>
 
@@ -1316,7 +1482,7 @@ const AdminPage: React.FC = () => {
                     </div>
 
                     <p className="mt-4 text-xs text-slate-400">
-                      Total units sold
+                      Completed transactions
                     </p>
                   </div>
 
@@ -1363,7 +1529,38 @@ const AdminPage: React.FC = () => {
                       {stats.outOfStock} currently out of stock
                     </p>
                   </div>
+
+                  <div className="rounded-3xl border border-amber-100 bg-amber-50 p-6">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="text-sm font-bold text-amber-700">Pending payments</p>
+                        <p className="mt-3 text-2xl font-black text-amber-950">{formatKES(stats.pendingPayments)}</p>
+                      </div>
+                      <Wallet className="h-5 w-5 text-amber-600" />
+                    </div>
+                    <p className="mt-4 text-xs text-amber-700">Outstanding across all sales</p>
+                  </div>
                 </div>
+
+                <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-4">
+                    <h2 className="text-lg font-black">Payment balances</h2>
+                    <p className="text-sm text-slate-500">Collected by method and outstanding customer credit</p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {[
+                      { label: "Cash received", value: paymentBalances.cash, tone: "text-emerald-700" },
+                      { label: "M-Pesa received", value: paymentBalances.mpesa, tone: "text-green-700" },
+                      { label: "Bank received", value: paymentBalances.bank, tone: "text-blue-700" },
+                      { label: "Credit outstanding", value: paymentBalances.credit, tone: "text-amber-700" },
+                    ].map((balance) => (
+                      <div key={balance.label} className="border-l-2 border-slate-200 px-4 py-2">
+                        <p className="text-sm font-bold text-slate-500">{balance.label}</p>
+                        <p className={`mt-1 text-xl font-black ${balance.tone}`}>{formatKES(balance.value)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
 
                 {/* QUICK ACTIONS */}
 
@@ -1506,7 +1703,7 @@ const AdminPage: React.FC = () => {
                         .filter(
                           (product) =>
                             Number(product.stock || 0) <=
-                            5
+                            Number(product.reorderLevel ?? 5)
                         )
                         .slice(0, 5)
                         .map((product) => (
@@ -1648,7 +1845,7 @@ const AdminPage: React.FC = () => {
 
                                 <p
                                   className={`text-xs font-bold ${
-                                    stock <= 5
+                                    stock <= Number(product.reorderLevel ?? 5)
                                       ? "text-amber-600"
                                       : "text-slate-400"
                                   }`}
@@ -1830,9 +2027,10 @@ const AdminPage: React.FC = () => {
 
                       <button
                         disabled={!cart.length}
-                        onClick={() =>
-                          setCheckoutOpen(true)
-                        }
+                        onClick={() => {
+                          setAmountPaid(paymentMethod === "Credit" ? "0" : String(cartSubtotal));
+                          setCheckoutOpen(true);
+                        }}
                         className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <Receipt className="mr-2 inline h-5 w-5" />
@@ -2027,7 +2225,7 @@ const AdminPage: React.FC = () => {
                               className={`rounded-full px-3 py-1.5 text-xs font-black ${
                                 stock <= 0
                                   ? "bg-red-50 text-red-700"
-                                  : stock <= 5
+                                  : stock <= Number(product.reorderLevel ?? 5)
                                   ? "bg-amber-50 text-amber-700"
                                   : "bg-emerald-50 text-emerald-700"
                               }`}
@@ -2095,6 +2293,29 @@ const AdminPage: React.FC = () => {
                     </div>
                   )}
                 </div>
+
+                <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-100 p-5">
+                    <h2 className="text-lg font-black">Stock movement history</h2>
+                    <p className="text-sm text-slate-500">Sales, receipts, removals, and corrections</p>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {movements.slice().reverse().slice(0, 12).map((movement) => (
+                      <div key={movement.id} className="grid gap-2 px-5 py-4 sm:grid-cols-[1.5fr_1fr_1fr_1.4fr] sm:items-center">
+                        <div>
+                          <p className="font-bold">{movement.productName}</p>
+                          <p className="text-xs text-slate-500">{movement.note || movement.type}</p>
+                        </div>
+                        <span className={`text-sm font-black ${movement.delta < 0 ? "text-red-600" : "text-emerald-700"}`}>
+                          {movement.delta > 0 ? "+" : ""}{movement.delta} units · {movement.type}
+                        </span>
+                        <span className="text-sm text-slate-600">{movement.stockBefore} → {movement.stockAfter}</span>
+                        <time className="text-xs text-slate-500">{new Date(movement.createdAt).toLocaleString()}</time>
+                      </div>
+                    ))}
+                    {!movements.length && <p className="p-8 text-center text-sm text-slate-500">Stock changes will appear here.</p>}
+                  </div>
+                </section>
               </div>
             )}
 
@@ -2368,33 +2589,18 @@ const AdminPage: React.FC = () => {
                       </label>
 
                       <label className="block text-sm font-bold">
-                        Payment status
-
-                        <select
-                          value={
-                            saleForm.paymentStatus
-                          }
-                          onChange={(e) =>
-                            setSaleForm({
-                              ...saleForm,
-                              paymentStatus:
-                                e.target.value as SaleRecord["paymentStatus"],
-                            })
-                          }
-                          className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3"
-                        >
-                          <option value="paid">
-                            Paid
-                          </option>
-
-                          <option value="pending">
-                            Pending
-                          </option>
-
-                          <option value="partial">
-                            Partial
-                          </option>
+                        Payment method
+                        <select value={saleForm.paymentMethod} onChange={(e) => setSaleForm({ ...saleForm, paymentMethod: e.target.value as PaymentMethod })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3">
+                          <option>Cash</option>
+                          <option>M-Pesa</option>
+                          <option>Bank</option>
+                          <option>Credit</option>
                         </select>
+                      </label>
+
+                      <label className="block text-sm font-bold">
+                        Amount received (KSh)
+                        <input min="0" type="number" value={saleForm.amountPaid} onChange={(e) => setSaleForm({ ...saleForm, amountPaid: e.target.value })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3" />
                       </label>
 
                       <button
@@ -2420,7 +2626,7 @@ const AdminPage: React.FC = () => {
                         </h2>
 
                         <p className="text-sm text-slate-500">
-                          {sales.length} recorded
+                          {new Set(sales.map((sale) => sale.transactionId || sale.id)).size} recorded
                           transactions
                         </p>
                       </div>
@@ -2469,6 +2675,14 @@ const AdminPage: React.FC = () => {
                                 <div className="text-xs text-slate-400">
                                   {sale.location}
                                 </div>
+                                <div className="text-xs text-slate-400">
+                                  {sale.customerPhone}
+                                </div>
+                                {transactions.filter((transaction) => transaction.id === sale.transactionId && transaction.balanceDue > 0 && transaction.saleIds[0] === sale.id).map((transaction) => (
+                                  <button key={transaction.id} onClick={() => { setPaymentTransaction(transaction); setPaymentAmount(String(transaction.balanceDue)); }} className="mt-2 block text-xs font-black text-emerald-700 hover:underline">
+                                    Collect {formatKES(transaction.balanceDue)}
+                                  </button>
+                                ))}
                               </td>
 
                               <td className="py-4">
@@ -2493,6 +2707,7 @@ const AdminPage: React.FC = () => {
                                   {
                                     sale.paymentStatus
                                   }
+                                  <span className="ml-1">· {sale.paymentMethod || "Cash"}</span>
                                 </span>
                               </td>
                             </tr>
@@ -2509,6 +2724,56 @@ const AdminPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {tab === "reports" && (
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5">
+                  <div>
+                    <h2 className="text-lg font-black">Sales performance</h2>
+                    <p className="text-sm text-slate-500">Revenue, gross profit, and payment mix</p>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <select value={reportPeriod} onChange={(e) => setReportPeriod(e.target.value as "day" | "month")} className="rounded-xl border border-slate-200 px-3 py-2.5 font-bold">
+                      <option value="day">Daily</option>
+                      <option value="month">Monthly</option>
+                    </select>
+                    <input type={reportPeriod === "day" ? "date" : "month"} value={reportPeriod === "day" ? reportDate : reportDate.slice(0, 7)} onChange={(e) => setReportDate(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5" />
+                  </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="rounded-2xl bg-slate-950 p-5 text-white">
+                    <p className="text-sm text-slate-400">Sales revenue</p>
+                    <p className="mt-2 text-2xl font-black">{formatKES(reportTotals.revenue)}</p>
+                    <p className="mt-2 text-xs text-slate-400">{new Set(reportSales.map((sale) => sale.transactionId || sale.id)).size} transactions</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5">
+                    <p className="text-sm text-slate-500">Gross profit</p>
+                    <p className="mt-2 text-2xl font-black text-emerald-700">{formatKES(reportTotals.grossProfit)}</p>
+                    <p className="mt-2 text-xs text-slate-500">Revenue less recorded product cost</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5">
+                    <p className="text-sm text-slate-500">Current stock valuation</p>
+                    <p className="mt-2 text-2xl font-black">{formatKES(stats.stockValue)}</p>
+                    <p className="mt-2 text-xs text-slate-500">At product cost price</p>
+                  </div>
+                </div>
+
+                <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 p-5">
+                    <h2 className="font-black">Payment breakdown</h2>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {reportTotals.paymentBreakdown.map(({ method, total }) => (
+                      <div key={method} className="flex items-center justify-between px-5 py-4">
+                        <span className="font-bold">{method}</span>
+                        <span className="font-black">{formatKES(total)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
               </div>
             )}
 
@@ -2618,29 +2883,19 @@ const AdminPage: React.FC = () => {
                 </label>
 
                 <label className="block text-sm font-bold">
-                  Payment status
-
-                  <select
-                    value={paymentStatus}
-                    onChange={(e) =>
-                      setPaymentStatus(
-                        e.target.value as SaleRecord["paymentStatus"]
-                      )
-                    }
-                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3"
-                  >
-                    <option value="paid">
-                      Paid
-                    </option>
-
-                    <option value="pending">
-                      Pending
-                    </option>
-
-                    <option value="partial">
-                      Partial
-                    </option>
+                  Payment method
+                  <select value={paymentMethod} onChange={(e) => { const nextMethod = e.target.value as PaymentMethod; setPaymentMethod(nextMethod); setAmountPaid(nextMethod === "Credit" ? "0" : String(cartSubtotal)); }} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3">
+                    <option>Cash</option>
+                    <option>M-Pesa</option>
+                    <option>Bank</option>
+                    <option>Credit</option>
                   </select>
+                </label>
+
+                <label className="block text-sm font-bold">
+                  Amount received (KSh)
+                  <input type="number" min="0" max={cartSubtotal} value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-3" />
+                  <span className="mt-1 block text-xs font-normal text-slate-500">Balance due: {formatKES(Math.max(0, cartSubtotal - (Number(amountPaid) || 0)))}</span>
                 </label>
 
                 <div className="flex gap-3 pt-2">
@@ -2666,6 +2921,41 @@ const AdminPage: React.FC = () => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {paymentTransaction && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <form onSubmit={submitPayment} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-emerald-700">Payment collection</p>
+                <h2 className="mt-1 text-xl font-black">Record payment</h2>
+              </div>
+              <button type="button" aria-label="Close payment form" onClick={() => setPaymentTransaction(null)} className="rounded-full bg-slate-100 p-2"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+              <p className="font-bold">{paymentTransaction.customerName}</p>
+              <p className="mt-1 text-sm text-slate-500">Transaction {paymentTransaction.id.slice(0, 8)}</p>
+              <p className="mt-3 text-sm text-slate-500">Outstanding balance</p>
+              <p className="text-2xl font-black text-amber-700">{formatKES(paymentTransaction.balanceDue)}</p>
+            </div>
+            <label className="mt-4 block text-sm font-bold">
+              Amount received (KSh)
+              <input required type="number" min="1" max={paymentTransaction.balanceDue} step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3" />
+            </label>
+            <label className="mt-4 block text-sm font-bold">
+              Received via
+              <select value={paymentEntryMethod} onChange={(e) => setPaymentEntryMethod(e.target.value as Exclude<PaymentMethod, "Credit">)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3">
+                <option>Cash</option>
+                <option>M-Pesa</option>
+                <option>Bank</option>
+              </select>
+            </label>
+            <button disabled={saving} className="mt-5 w-full rounded-xl bg-slate-950 px-5 py-3.5 font-black text-white hover:bg-emerald-700 disabled:opacity-50">
+              {saving ? "Saving..." : "Save payment"}
+            </button>
+          </form>
         </div>
       )}
 
@@ -2760,7 +3050,7 @@ const AdminPage: React.FC = () => {
 
                 <input
                   required
-                  min="0"
+                  min={inventoryAction === "set" ? "0" : "1"}
                   type="number"
                   value={inventoryQuantity}
                   onChange={(e) =>
@@ -2935,6 +3225,11 @@ const AdminPage: React.FC = () => {
                 />
               </label>
 
+              <label className="text-sm font-bold">
+                Reorder level
+                <input min="0" type="number" value={editingProduct.reorderLevel ?? 5} onChange={(e) => setEditingProduct({ ...editingProduct, reorderLevel: Number(e.target.value) })} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3" />
+              </label>
+
               <label className="text-sm font-bold sm:col-span-2">
                 Image path / URL
 
@@ -2992,6 +3287,11 @@ const AdminPage: React.FC = () => {
                   className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3"
                   placeholder="One feature per line"
                 />
+              </label>
+
+              <label className="flex items-center gap-2 text-sm font-bold sm:col-span-2">
+                <input type="checkbox" checked={editingProduct.active !== false} onChange={(e) => setEditingProduct({ ...editingProduct, active: e.target.checked })} />
+                Active in public catalogue and POS
               </label>
             </div>
 
