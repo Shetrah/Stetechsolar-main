@@ -1,5 +1,4 @@
 import { handleApi, type Env } from '../server/app';
-import { createFirebaseBackend } from '../server/firebase';
 
 type VercelRequest = AsyncIterable<Uint8Array | string> & {
   method: string;
@@ -17,11 +16,18 @@ export const config = { api: { bodyParser: false } };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const env = process.env;
-  const backend = createFirebaseBackend(env);
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-
   try {
+    let backend: { BUCKET?: Env['BUCKET']; RETAIL?: Env['RETAIL']; error?: string } | undefined;
+    if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      try {
+        backend = (await import('../server/firebase')).createFirebaseBackend(env);
+      } catch (error) {
+        console.error('STETECH Firebase module failed to load:', error);
+        backend = { error: 'Firebase Admin could not load in this deployment. Verify the Node.js runtime and firebase-admin installation.' };
+      }
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       for await (const chunk of req) {
         const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk);
