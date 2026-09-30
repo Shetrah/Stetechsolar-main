@@ -1,4 +1,4 @@
-export interface GalleryImage { id: string; src: string; title: string; category: string; location: string; published: boolean; order: number; }
+export interface GalleryImage { id: string; src: string; title: string; category: string; location: string; published: boolean; order: number; storagePath?: string; }
 export const galleryCategories = ['Residential', 'Schools & institutions', 'Solar lighting', 'Installation'];
 export const seedGallery: GalleryImage[] = [
   ['maranda-1', '/maranda/1.jpg', 'Solar power for Maranda High School', 'Schools & institutions', 'Bondo, Siaya'],

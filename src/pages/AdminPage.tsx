@@ -5,9 +5,12 @@ import {
   Check,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   Images,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   Package,
   PackagePlus,
@@ -29,6 +32,8 @@ import {
 } from "lucide-react";
 
 import { Product } from "../data/products";
+import { firebaseAuth, isAdminFirebaseUser } from "../data/firebase";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import {
   addSale,
   addSales,
@@ -94,27 +99,6 @@ const emptyProduct: Product = {
   active: true,
 };
 
-async function readAdminResponse<T extends Record<string, unknown>>(response: Response): Promise<T> {
-  const body = await response.text();
-  let data: unknown;
-  try {
-    data = JSON.parse(body);
-  } catch {
-    if (!response.ok) {
-      throw new Error(`Admin server returned HTTP ${response.status}. Redeploy the latest Vercel API build and check its function logs.`);
-    }
-    throw new Error("Admin server returned an invalid response.");
-  }
-  if (!response.ok) {
-    const message = data && typeof data === "object" && "error" in data && typeof data.error === "string"
-      ? data.error
-      : `Admin server returned HTTP ${response.status}.`;
-    throw new Error(message);
-  }
-  if (!data || typeof data !== "object") throw new Error("Admin server returned an invalid response.");
-  return data as T;
-}
-
 const AdminPage: React.FC = () => {
   /* -------------------------------------------------------------
      AUTH
@@ -122,6 +106,9 @@ const AdminPage: React.FC = () => {
 
   const [loggedIn, setLoggedIn] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   /* -------------------------------------------------------------
      GLOBAL STATE
@@ -224,14 +211,27 @@ const AdminPage: React.FC = () => {
   ------------------------------------------------------------- */
 
   useEffect(() => {
-    fetch("/api/session")
-      .then((response) => readAdminResponse<{ authenticated: boolean; configured: boolean; error?: string }>(response))
-      .then((data) => {
-        setLoggedIn(Boolean(data.authenticated));
-        if (!data.configured) setError(data.error || "Firebase is not configured. Set Firebase Admin credentials and ADMIN_PASSWORD on the server.");
-      })
-      .catch((error) => setError(error instanceof Error ? error.message : "Unable to connect to the admin server."))
-      .finally(() => setAuthReady(true));
+    return onAuthStateChanged(firebaseAuth, async (user) => {
+      if (!user) {
+        setLoggedIn(false);
+        setAuthReady(true);
+        return;
+      }
+      try {
+        if (await isAdminFirebaseUser(user)) setLoggedIn(true);
+        else {
+          await signOut(firebaseAuth);
+          setLoggedIn(false);
+          setError("This Firebase account is not authorized for the admin portal.");
+        }
+      } catch (error) {
+        await signOut(firebaseAuth).catch(() => undefined);
+        setLoggedIn(false);
+        setError(error instanceof Error ? error.message : "Could not verify the Firebase account.");
+      } finally {
+        setAuthReady(true);
+      }
+    });
   }, []);
 
   /* -------------------------------------------------------------
@@ -489,30 +489,26 @@ const AdminPage: React.FC = () => {
     setError("");
 
     try {
-      const response = await fetch("/api/session", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ password }),
-      });
-
-      await readAdminResponse<{ ok: boolean }>(response);
+      const credential = await signInWithEmailAndPassword(firebaseAuth, email.trim(), password);
+      if (!(await isAdminFirebaseUser(credential.user))) {
+        await signOut(firebaseAuth);
+        throw new Error("This Firebase account is not authorized for the admin portal.");
+      }
 
       setLoggedIn(true);
       setPassword("");
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : "Sign in failed. Please try again."
-      );
+      const code = e && typeof e === "object" && "code" in e ? String(e.code) : "";
+      const message = code === "auth/invalid-credential" || code === "auth/user-not-found" || code === "auth/wrong-password"
+        ? "Email or password is incorrect."
+        : code === "auth/operation-not-allowed"
+          ? "Email/password sign-in is disabled in Firebase Authentication."
+          : e instanceof Error ? e.message : "Sign in failed. Please try again.";
+      setError(message);
     } finally {
       setSaving(false);
     }
   };
-
-  const [password, setPassword] = useState("");
 
   /* -------------------------------------------------------------
      LOGOUT
@@ -520,14 +516,7 @@ const AdminPage: React.FC = () => {
 
   const logout = async () => {
     try {
-      const response = await fetch("/api/session", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Could not sign out.");
-      }
-
+      await signOut(firebaseAuth);
       setLoggedIn(false);
       setTab("overview");
       setError("");
@@ -1171,21 +1160,44 @@ const AdminPage: React.FC = () => {
             )}
 
             <label className="block">
-              <span className="mb-2 block text-sm font-bold text-slate-700">
-                Admin password
-              </span>
+              <span className="mb-2 block text-sm font-bold text-slate-700">Admin email</span>
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="email"
+                  autoFocus
+                  autoComplete="username"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-4 pl-11 pr-4 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-50"
+                  placeholder="name@example.com"
+                />
+              </div>
+            </label>
 
-              <input
-                type="password"
-                autoFocus
-                required
-                value={password}
-                onChange={(e) =>
-                  setPassword(e.target.value)
-                }
-                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-50"
-                placeholder="Enter password"
-              />
+            <label className="block">
+              <span className="mb-2 block text-sm font-bold text-slate-700">Admin password</span>
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-50"
+                  placeholder="Enter password"
+                />
+                <button
+                  type="button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  title={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                >
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
+              </div>
             </label>
 
             <button

@@ -18,7 +18,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const env = process.env;
   try {
     const { handleApi } = await import('../server/app');
-    let backend: { BUCKET?: Env['BUCKET']; RETAIL?: Env['RETAIL']; error?: string } | undefined;
+    let backend: { BUCKET?: Env['BUCKET']; RETAIL?: Env['RETAIL']; FIREBASE_AUTH?: Env['FIREBASE_AUTH']; error?: string } | undefined;
     if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {
         backend = (await import('../server/firebase')).createFirebaseBackend(env);
@@ -52,13 +52,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ...(chunks.length ? { body: new Blob(chunks) } : {}),
     });
     const response = await handleApi(request, {
-      ADMIN_PASSWORD: env.ADMIN_PASSWORD,
       SESSION_SECRET: env.SESSION_SECRET,
       OPENROUTER_API_KEY: env.OPENROUTER_API_KEY,
       OPENROUTER_MODEL: env.OPENROUTER_MODEL,
       SITE_URL: env.SITE_URL,
       BUCKET: backend?.error ? undefined : backend?.BUCKET,
       RETAIL: backend?.error ? undefined : backend?.RETAIL,
+      FIREBASE_AUTH: backend?.error ? undefined : backend?.FIREBASE_AUTH,
+      FIREBASE_ADMIN_EMAILS: env.FIREBASE_ADMIN_EMAILS,
       PERSISTENCE_ERROR: backend?.error,
     } satisfies Env);
 

@@ -10,6 +10,7 @@ export interface InventoryRecord { id:string; productId:number; productName:stri
 export interface RetailTransaction { id:string; customerName:string; customerPhone:string; location:string; total:number; amountPaid:number; balanceDue:number; paymentStatus:'paid'|'pending'|'partial'; paymentMethod:PaymentMethod; soldAt:string; saleIds:string[]; }
 export interface PaymentRecord { id:string; transactionId:string; customerName:string; method:Exclude<PaymentMethod,'Credit'>; amount:number; createdAt:string; }
 export interface SaleRequest { items:{productId:number;quantity:number;unitPrice:number}[]; customerName:string; customerPhone:string; location:string; paymentMethod:PaymentMethod; amountPaid:number; }
+export interface FirebaseAuthVerifier { verifyIdToken(token:string):Promise<{uid:string;email?:string;admin?:boolean}>; }
 export interface RetailRepository {
   getProducts(activeOnly:boolean):Promise<RetailProduct[]>;
   saveProducts(products:RetailProduct[]):Promise<void>;
@@ -22,14 +23,13 @@ export interface RetailRepository {
   adjustInventory(input:{productId:number;action:'receive'|'remove'|'set';quantity:number;note:string}):Promise<{movement:InventoryRecord;products:RetailProduct[];movements:InventoryRecord[]}>;
   addPayment(input:{transactionId:string;amount:number;method:Exclude<PaymentMethod,'Credit'>}):Promise<{payment:PaymentRecord;transaction:RetailTransaction;sales:RetailSale[];payments:PaymentRecord[]}>;
 }
-export interface Env { BUCKET?: Store; RETAIL?: RetailRepository; PERSISTENCE_ERROR?: string; ADMIN_PASSWORD?: string; SESSION_SECRET?: string; OPENROUTER_API_KEY?: string; OPENROUTER_MODEL?: string; SITE_URL?: string; }
+export interface Env { BUCKET?: Store; RETAIL?: RetailRepository; FIREBASE_AUTH?: FirebaseAuthVerifier; FIREBASE_ADMIN_EMAILS?: string; PERSISTENCE_ERROR?: string; SESSION_SECRET?: string; OPENROUTER_API_KEY?: string; OPENROUTER_MODEL?: string; SITE_URL?: string; }
 type RetailState = { products: RetailProduct[]; sales: RetailSale[]; inventoryMovements: InventoryRecord[]; payments:PaymentRecord[]; transactions:RetailTransaction[] };
 const json = (data: unknown,status=200,headers: Record<string,string>={}) => new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});
 const encoder = new TextEncoder();
 const text = (v: unknown, max=200) => typeof v === 'string' ? v.trim().slice(0,max) : '';
-const safeEqual = async (a: string,b: string) => { const aa = new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(a))); const bb = new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(b))); return aa.reduce((n,v,i)=> n | (v ^ bb[i]),0)===0; };
-async function sign(value:string,env:Env) { const key=await crypto.subtle.importKey('raw',encoder.encode(env.SESSION_SECRET || env.ADMIN_PASSWORD || ''),{name:'HMAC',hash:'SHA-256'},false,['sign']); return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(value)))).map(n=>n.toString(16).padStart(2,'0')).join(''); }
-async function authenticated(req:Request,env:Env) { if(!env.ADMIN_PASSWORD)return false; const token=req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('stetech_session='))?.split('=')[1] || ''; const [expiry,nonce,sig]=token.split('.'); return Number(expiry)>Date.now() && !!nonce && !!sig && safeEqual(sig,await sign(`${expiry}.${nonce}`,env)); }
+async function sign(value:string,env:Env) { const key=await crypto.subtle.importKey('raw',encoder.encode(env.SESSION_SECRET || ''),{name:'HMAC',hash:'SHA-256'},false,['sign']); return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(value)))).map(n=>n.toString(16).padStart(2,'0')).join(''); }
+async function authenticated(req:Request,env:Env) { if(!env.SESSION_SECRET)return false; const token=req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('stetech_session='))?.split('=')[1] || ''; const [expiry,nonce,sig]=token.split('.'); return Number(expiry)>Date.now() && !!nonce && !!sig && sig===await sign(`${expiry}.${nonce}`,env); }
 function cookie(value:string,req:Request,maxAge=28800) { return `stetech_session=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${new URL(req.url).protocol==='https:'?'; Secure':''}`; }
 async function readJson<T>(store:Store,key:string,fallback:T):Promise<T> { const obj=await store.get(key); return obj ? JSON.parse(await obj.text()) as T : fallback; }
 async function allGallery(store:Store):Promise<GalleryImage[]> { let cursor:string|undefined; const custom:GalleryImage[]=[]; do { const list=await store.list({prefix:'gallery/meta/',cursor}); for(const item of list.objects) {const value=await store.get(item.key); if(value)custom.push(JSON.parse(await value.text()));} cursor=list.truncated?list.cursor:undefined; }while(cursor); const map=new Map(seedGallery.map(x=>[x.id,x])); custom.forEach(x=>map.set(x.id,x)); return [...map.values()].sort((a,b)=>a.order-b.order || a.id.localeCompare(b.id)); }
@@ -58,12 +58,19 @@ export async function handleApi(req:Request,env:Env):Promise<Response> {
     if(Number(req.headers.get('content-length')||0)>3*1024*1024)return json({error:'Image is too large. Choose a smaller image.'},413);
     if(path==='/api/solar-chat')return req.method==='POST'?chat(req,env):json({error:'Method not allowed'},405);
     if(path==='/api/session') {
-      if(req.method==='GET')return json({authenticated:await authenticated(req,env),configured:!!env.ADMIN_PASSWORD&&!!(env.RETAIL||env.BUCKET),error:env.PERSISTENCE_ERROR});
+      if(req.method==='GET')return json({authenticated:await authenticated(req,env),configured:!!env.FIREBASE_AUTH&&!!env.SESSION_SECRET&&!!(env.RETAIL||env.BUCKET),error:env.PERSISTENCE_ERROR});
       if(req.method==='DELETE')return json({ok:true},200,{'Set-Cookie':cookie('',req,0)});
       if(req.method!=='POST')return json({error:'Method not allowed'},405);
-      if(!env.ADMIN_PASSWORD || !(env.RETAIL||env.BUCKET))return json({error:'Admin access is not configured on this server.'},503);
+      if(!env.FIREBASE_AUTH||!env.SESSION_SECRET||!(env.RETAIL||env.BUCKET))return json({error:env.PERSISTENCE_ERROR||'Firebase Admin, Firestore, and SESSION_SECRET must be configured on the server.'},503);
       if(env.BUCKET && await limited(req,env.BUCKET,'login',6))return json({error:'Too many attempts. Please try again in a minute.'},429);
-      const data=await req.json() as {password?:unknown}; if(!await safeEqual(text(data.password,512),env.ADMIN_PASSWORD))return json({error:'Incorrect password.'},401);
+      const data=await req.json() as {idToken?:unknown};
+      if(typeof data.idToken!=='string'||!data.idToken)return json({error:'Sign in with your Firebase email and password first.'},400);
+      let decoded:{uid:string;email?:string;admin?:boolean};
+      try { decoded=await env.FIREBASE_AUTH.verifyIdToken(data.idToken); }
+      catch { return json({error:'Firebase rejected this sign-in. Check the email and password, then try again.'},401); }
+      const email=decoded.email?.trim().toLowerCase();
+      const allowedEmails=(env.FIREBASE_ADMIN_EMAILS||'').split(',').map(value=>value.trim().toLowerCase()).filter(Boolean);
+      if(decoded.admin!==true&&(!email||!allowedEmails.includes(email)))return json({error:'This Firebase account is not authorized for the admin portal.'},403);
       const token=`${Date.now()+28800000}.${crypto.randomUUID()}`; return json({ok:true},200,{'Set-Cookie':cookie(`${token}.${await sign(token,env)}`,req)});
     }
     const admin=await authenticated(req,env);

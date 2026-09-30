@@ -1,4 +1,5 @@
 import { cert, getApps, initializeApp, type ServiceAccount } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { FieldPath, getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { initialProducts } from '../src/data/products';
@@ -345,7 +346,7 @@ class FirestoreRetailRepository implements RetailRepository {
   }
 }
 
-export function createFirebaseBackend(environment: NodeJS.ProcessEnv): (Pick<Env, 'BUCKET' | 'RETAIL'> & { error?: string }) | undefined {
+export function createFirebaseBackend(environment: NodeJS.ProcessEnv): (Pick<Env, 'BUCKET' | 'RETAIL' | 'FIREBASE_AUTH'> & { error?: string }) | undefined {
   const serializedAccount = environment.FIREBASE_SERVICE_ACCOUNT_JSON;
   if (!serializedAccount) return undefined;
   try {
@@ -357,9 +358,19 @@ export function createFirebaseBackend(environment: NodeJS.ProcessEnv): (Pick<Env
       credential: cert(account), projectId, storageBucket,
     }, 'stetech-admin');
     const database = getFirestore(app);
+    const authentication = getAuth(app);
     if (!existing) database.settings({ ignoreUndefinedProperties: true });
     const bucket = getStorage(app).bucket(storageBucket);
-    return { BUCKET: new FirebaseStore(database, bucket), RETAIL: new FirestoreRetailRepository(database) };
+    return {
+      BUCKET: new FirebaseStore(database, bucket),
+      RETAIL: new FirestoreRetailRepository(database),
+      FIREBASE_AUTH: {
+        async verifyIdToken(token) {
+          const decoded = await authentication.verifyIdToken(token);
+          return { uid: decoded.uid, email: decoded.email, admin: decoded.admin === true };
+        },
+      },
+    };
   } catch (error) {
     console.error('STETECH Firebase initialization failed:', error);
     return { error: 'Firebase Admin credentials are invalid or Firebase could not be initialized.' };
