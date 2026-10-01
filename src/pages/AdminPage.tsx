@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import {
+  ArrowRight,
   BarChart3,
   Boxes,
   Check,
   Download,
   Edit3,
-  Eye,
-  EyeOff,
   Images,
   LayoutDashboard,
   LogOut,
@@ -32,13 +32,14 @@ import {
 } from "lucide-react";
 
 import { Product } from "../data/products";
-import { firebaseAuth, isAdminFirebaseUser } from "../data/firebase";
+import { firebaseAuth, firebaseDb, isAdminFirebaseUser } from "../data/firebase";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import {
   addSale,
   addSales,
   adjustInventory,
   formatKES,
+  formatRecordCode,
   getAllProducts,
   getInventoryMovements,
   getPayments,
@@ -52,6 +53,10 @@ import {
   syncSales,
   syncInventoryMovements,
   syncPayments,
+  subscribeProducts,
+  subscribeSales,
+  subscribeInventoryMovements,
+  subscribePayments,
   InventoryMovement,
   PaymentMethod,
   PaymentRecord,
@@ -62,6 +67,9 @@ import {
 
 import { Cog } from "lucide-react";
 import GalleryAdmin from "../components/GalleryAdmin";
+import ProjectManagement from "../components/ProjectManagement";
+import StaffManagement from "../components/StaffManagement";
+import PortalProfileModal from "../components/PortalProfileModal";
 
 type Tab =
   | "overview"
@@ -70,6 +78,8 @@ type Tab =
   | "products"
   | "sales"
   | "reports"
+  | "projects"
+  | "staff"
   | "gallery";
 
 type CartItem = {
@@ -109,6 +119,7 @@ const AdminPage: React.FC = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   /* -------------------------------------------------------------
      GLOBAL STATE
@@ -133,6 +144,7 @@ const AdminPage: React.FC = () => {
   ------------------------------------------------------------- */
 
   const [productSearch, setProductSearch] = useState("");
+  const [salesSearch, setSalesSearch] = useState("");
   const [showProductForm, setShowProductForm] = useState(false);
   const [editingProduct, setEditingProduct] =
     useState<Product>(emptyProduct);
@@ -218,16 +230,18 @@ const AdminPage: React.FC = () => {
         return;
       }
       try {
-        if (await isAdminFirebaseUser(user)) setLoggedIn(true);
+        if (await isAdminFirebaseUser(user)) {
+          setLoggedIn(true);
+          setError("");
+        }
         else {
-          await signOut(firebaseAuth);
           setLoggedIn(false);
           setError("This Firebase account is not authorized for the admin portal.");
         }
       } catch (error) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        setLoggedIn(false);
-        setError(error instanceof Error ? error.message : "Could not verify the Firebase account.");
+        setError(error instanceof Error
+          ? `Could not verify admin access: ${error.message}. Your sign-in is preserved; retry after permissions or connectivity are restored.`
+          : "Could not verify the Firebase account. Your sign-in is preserved; please retry.");
       } finally {
         setAuthReady(true);
       }
@@ -251,6 +265,11 @@ const AdminPage: React.FC = () => {
     void syncPayments().catch((e) =>
       setError(e instanceof Error ? e.message : "Unable to sync payment records.")
     );
+    const stopProducts = subscribeProducts(() => refresh(), true, (e) => setError(e.message));
+    const stopSales = subscribeSales(() => refresh(), (e) => setError(e.message));
+    const stopMovements = subscribeInventoryMovements(() => refresh(), (e) => setError(e.message));
+    const stopPayments = subscribePayments(() => refresh(), (e) => setError(e.message));
+    return () => { stopProducts(); stopSales(); stopMovements(); stopPayments(); };
   }, [loggedIn]);
 
   useEffect(() => {
@@ -378,6 +397,22 @@ const AdminPage: React.FC = () => {
     });
   }, [products, productSearch]);
 
+  const filteredSales = useMemo(() => {
+    const search = salesSearch.trim().toLowerCase();
+    if (!search) return sales;
+    const matchingPaymentTransactions = new Set(
+      payments.filter((payment) => payment.receiptNumber?.toLowerCase().includes(search)).map((payment) => payment.transactionId)
+    );
+    return sales.filter((sale) =>
+      sale.receiptNumber?.toLowerCase().includes(search)
+      || sale.transactionId?.toLowerCase().includes(search)
+      || sale.productName.toLowerCase().includes(search)
+      || sale.customerName.toLowerCase().includes(search)
+      || sale.customerPhone.toLowerCase().includes(search)
+      || (sale.transactionId ? matchingPaymentTransactions.has(sale.transactionId) : false)
+    );
+  }, [sales, salesSearch, payments]);
+
   /* -------------------------------------------------------------
      POS PRODUCTS
   ------------------------------------------------------------- */
@@ -469,6 +504,11 @@ const AdminPage: React.FC = () => {
     };
   }, [reportSales, payments, transactions, reportDate, reportPeriod, products]);
 
+  const staffReportSales = useMemo(() => reportSales.map((sale) => ({
+    ...sale,
+    staffName: sale.staffName || 'Admin / legacy sale',
+  })).sort((first, second) => second.soldAt.localeCompare(first.soldAt)), [reportSales]);
+
   const paymentBalances = useMemo(() => ({
     cash: payments.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amount, 0),
     mpesa: payments.filter((payment) => payment.method === "M-Pesa").reduce((sum, payment) => sum + payment.amount, 0),
@@ -491,7 +531,6 @@ const AdminPage: React.FC = () => {
     try {
       const credential = await signInWithEmailAndPassword(firebaseAuth, email.trim(), password);
       if (!(await isAdminFirebaseUser(credential.user))) {
-        await signOut(firebaseAuth);
         throw new Error("This Firebase account is not authorized for the admin portal.");
       }
 
@@ -711,7 +750,7 @@ const AdminPage: React.FC = () => {
      POS CHECKOUT
   ------------------------------------------------------------- */
 
-  const printReceipt = (
+  const printReceipt = async (
     target: Window | null,
     records: SaleRecord[],
     customer: string,
@@ -720,8 +759,9 @@ const AdminPage: React.FC = () => {
     method: PaymentMethod,
     total: number,
     amountReceived: number,
-    referenceOverride?: string
-  ) => {
+    receiptNumber?: string,
+    verificationId?: string
+  ): Promise<void> => {
     if (!target) {
       setError("Sale completed. Allow pop-ups to print the receipt.");
       return;
@@ -729,11 +769,44 @@ const AdminPage: React.FC = () => {
     const escape = (value: unknown) => String(value).replace(/[&<>"']/g, (character) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
     })[character] || character);
-    const rows = records.map((record) => `<tr><td>${escape(record.productName)}<small>${record.quantity} × ${formatKES(record.unitPrice)}</small></td><td>${formatKES(record.total)}</td></tr>`).join("");
+    const rows = records.map((record) => `<tr><td>${escape(record.productName)}<small>Sale ID ${formatRecordCode(record.id)} · ${record.quantity} × ${formatKES(record.unitPrice)}</small></td><td>${formatKES(record.total)}</td></tr>`).join("");
     const receiptStatus = amountReceived >= total ? "PAID" : amountReceived > 0 ? "PARTIALLY PAID" : "CREDIT";
     const logo = escape(new URL("/stetech solar.png", window.location.origin).href);
-    const reference = escape(referenceOverride || records[0]?.transactionId || records[0]?.id || "");
+    const transactionCode = formatRecordCode(records[0]?.transactionId || records[0]?.id);
+    const reference = escape(`${receiptNumber || records[0]?.receiptNumber || records[0]?.id || ""} · TXN ${transactionCode}`);
+    const validationUrl = new URL("/receipt/validate", window.location.origin);
+    if (verificationId) validationUrl.searchParams.set("code", verificationId);
+    const qrDataUrl = verificationId ? await QRCode.toDataURL(validationUrl.href, { width: 220, margin: 1, color: { dark: "#24302d", light: "#ffffff" } }) : "";
     target.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>STETECH e-Receipt</title><style>*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#10201a;margin:0;padding:28px}.receipt{max-width:520px;margin:auto;border:1px solid #dce6e0;border-radius:12px;overflow:hidden}.letterhead{display:flex;align-items:center;gap:14px;padding:22px;background:#062a22;color:#fff}.logo{width:58px;height:58px;object-fit:contain;background:#fff;border-radius:10px;padding:4px}.company{font-size:17px;font-weight:800;letter-spacing:.6px}.details{font-size:11px;line-height:1.55;color:#c9d8d1;margin-top:5px}.body{padding:22px}.title{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dce6e0;padding-bottom:14px}.title h1{font-size:20px;margin:0}.badge{font-size:10px;font-weight:800;letter-spacing:.5px;color:#075b3e;background:#e3f5eb;border-radius:20px;padding:7px 9px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0;font-size:12px}.meta span{display:block;color:#63736c;margin-bottom:3px}.meta strong{overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;margin:18px 0}th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#63736c;text-align:left;padding:9px 0;border-bottom:1px solid #cbd8d1}th:last-child,td:last-child{text-align:right}td{padding:11px 0;border-bottom:1px solid #e6ede9;font-size:12px}td small{display:block;color:#63736c;margin-top:4px}.totals{margin:16px 0 0 auto;max-width:260px}.line{display:flex;justify-content:space-between;padding:5px 0;color:#45564e}.grand{font-size:17px;font-weight:800;color:#10201a;border-top:1px solid #cbd8d1;margin-top:7px;padding-top:11px}.thanks{border-top:1px dashed #cbd8d1;margin-top:20px;padding-top:15px;text-align:center;color:#63736c;font-size:11px}.thanks strong{display:block;color:#075b3e;margin-bottom:4px}@media print{body{padding:0}.receipt{border:0;max-width:none}.letterhead{-webkit-print-color-adjust:exact;print-color-adjust:exact}.badge{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><article class="receipt"><header class="letterhead"><img class="logo" src="${logo}" alt="STETECH Solar logo"><div><div class="company">STETECH SOLAR TECHNOLOGY</div><div class="details">Uhuru Market Business Complex, Block R41<br>Nyerere Road, Kisumu, Kenya<br>Phone: +254 717 656 407</div></div></header><main class="body"><div class="title"><h1>Electronic receipt</h1><span class="badge">${receiptStatus}</span></div><div class="meta"><div><span>Receipt reference</span><strong>${reference}</strong></div><div><span>Date and time</span><strong>${escape(new Date().toLocaleString())}</strong></div><div><span>Customer</span><strong>${escape(customer || "Walk-in customer")}</strong></div><div><span>Phone</span><strong>${escape(phone || "Not provided")}</strong></div><div><span>Payment method</span><strong>${escape(method)}</strong></div><div><span>Location</span><strong>${escape(location || "Not provided")}</strong></div></div><table><thead><tr><th>Item</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table><div class="totals"><div class="line"><span>Total</span><strong>${formatKES(total)}</strong></div><div class="line"><span>Amount received</span><strong>${formatKES(amountReceived)}</strong></div><div class="line grand"><span>Balance due</span><span>${formatKES(Math.max(0, total - amountReceived))}</span></div></div><div class="thanks"><strong>Thank you for choosing STETECH Solar</strong>System-generated receipt · Keep this reference for payment follow-up.</div></main></article><script>window.onload=()=>window.print()</script></body></html>`);
+    const theme = target.document.createElement("style");
+    theme.textContent = "body{background:#e9ebe8!important;color:#242a28!important;padding:6px!important}.receipt{max-width:400px!important;border-radius:8px!important;background:#fff!important;border-color:#d5d9d5!important}.letterhead{background:#f1f2ef!important;color:#242a28!important;border-bottom:1px solid #d4d8d4;padding:10px 12px!important;gap:10px!important}.logo{width:42px!important;height:42px!important;padding:2px!important;border-radius:6px!important}.company{font-size:13px!important}.details{font-size:9px!important;line-height:1.3!important;color:#515b56!important;margin-top:3px!important}.body{padding:12px!important}.title{padding-bottom:8px!important}.title h1{font-size:15px!important}.badge{font-size:9px!important;background:#e8eae7!important;color:#333b37!important;padding:5px 7px!important}.meta{gap:6px!important;margin:10px 0!important;font-size:10px!important}.meta span{margin-bottom:2px!important}.thanks strong{color:#333b37!important}table{margin:10px 0!important}th{padding:5px 0!important}td{padding:6px 0!important;font-size:10px!important}td small{margin-top:2px!important}.totals{margin-top:8px!important}.line{padding:3px 0!important}.grand{font-size:14px!important;margin-top:5px!important;padding-top:7px!important}.receipt-notes{margin-top:9px!important;padding-top:7px!important;font-size:8px!important;line-height:1.35!important}.receipt-notes h2{font-size:9px!important;margin-bottom:4px!important}.receipt-notes li{margin:1px 0!important}.receipt-verify{gap:8px!important;margin-top:9px!important;padding-top:7px!important;font-size:8px!important}.receipt-verify img{width:62px!important;height:62px!important}@page{margin:8mm 10mm}@media print{body{padding:0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.receipt{border:0!important;max-width:400px!important}}";
+    target.document.head.appendChild(theme);
+    const headerDetails = target.document.querySelector(".letterhead .details");
+    if (headerDetails) headerDetails.insertAdjacentHTML("beforeend", "<br>stetechsolartechnology.co.ke");
+    const receiptBody = target.document.querySelector(".receipt .body");
+    if (receiptBody) {
+      const notes = target.document.createElement("section");
+      notes.className = "receipt-notes";
+      notes.innerHTML = "<h2>PLEASE NOTE</h2><ul><li>Accounts are due on demand.</li><li>Our products carry a warranty against manufacturing defects. All claims must be accompanied by the sales invoice.</li><li>Goods once sold are not returnable and remain the property of STETECH SOLAR TECHNOLOGY Kenya Limited until fully paid for.</li><li>Our official bank details remain unchanged. Confirm any requested change through the company’s official telephone contacts.</li><li>E&amp;O.E.</li></ul>";
+      notes.style.cssText = "border-top:1px solid #d5d9d5;margin-top:9px;padding-top:7px;font-size:8px;color:#515b56;line-height:1.35";
+      const notesStyle = target.document.createElement("style");
+      notesStyle.textContent = ".receipt-notes h2{font-size:11px;margin:0 0 6px;color:#333b37}.receipt-notes ul{margin:0;padding-left:16px}.receipt-notes li{margin:3px 0}";
+      target.document.head.appendChild(notesStyle);
+      if (qrDataUrl) {
+        const verification = target.document.createElement("div");
+        verification.className = "receipt-verify";
+        verification.style.cssText = "display:flex;align-items:center;gap:8px;border-top:1px solid #d5d9d5;margin-top:9px;padding-top:7px;font-size:8px;color:#515b56";
+        const qr = target.document.createElement("img");
+        qr.src = qrDataUrl;
+        qr.alt = "Scan to verify receipt authenticity";
+        qr.style.cssText = "width:62px;height:62px;image-rendering:pixelated";
+        const verifyText = target.document.createElement("div");
+        verifyText.textContent = "Scan to verify this receipt online. Verification shows receipt totals and payment status only.";
+        verification.append(qr, verifyText);
+        receiptBody.appendChild(verification);
+      }
+      receiptBody.appendChild(notes);
+    }
     target.document.close();
   };
 
@@ -756,7 +829,7 @@ const AdminPage: React.FC = () => {
         paymentMethod,
         amountPaid: Math.max(0, Math.min(cartSubtotal, Number(amountPaid) || 0)),
       });
-      printReceipt(receiptWindow, records, customerName.trim() || "Walk-in customer", customerPhone, customerLocation, paymentMethod, cartSubtotal, Math.max(0, Math.min(cartSubtotal, Number(amountPaid) || 0)));
+      await printReceipt(receiptWindow, records, customerName.trim() || "Walk-in customer", customerPhone, customerLocation, paymentMethod, cartSubtotal, Math.max(0, Math.min(cartSubtotal, Number(amountPaid) || 0)), records[0]?.receiptNumber, records[0]?.verificationId);
 
       setCart([]);
       setCustomerName("");
@@ -874,7 +947,7 @@ const AdminPage: React.FC = () => {
     setError("");
     try {
       const payment = await recordPayment({ transactionId: paymentTransaction.id, amount, method: paymentEntryMethod });
-      printReceipt(
+      await printReceipt(
         receiptWindow,
         sales.filter((sale) => sale.transactionId === paymentTransaction.id),
         paymentTransaction.customerName,
@@ -883,7 +956,8 @@ const AdminPage: React.FC = () => {
         paymentEntryMethod,
         paymentTransaction.total,
         paymentTransaction.amountPaid + amount,
-        payment.id
+        payment.receiptNumber,
+        payment.verificationId
       );
       setPaymentTransaction(null);
       setPaymentAmount("");
@@ -958,12 +1032,13 @@ const AdminPage: React.FC = () => {
 
   const exportSales = () => {
     const header =
-      "Sale ID,Transaction ID,Date,Product,Quantity,Unit Price,Total,Amount Paid,Payment Method,Customer,Phone,Location,Payment Status";
+      "Sale ID,Transaction ID,Receipt Reference,Date,Product,Quantity,Unit Price,Total,Amount Paid,Payment Method,Customer,Phone,Location,Payment Status";
 
     const rows = sales.map((s) =>
       [
-        s.id,
-        s.transactionId || s.id,
+        formatRecordCode(s.id),
+        formatRecordCode(s.transactionId || s.id),
+        s.receiptNumber || "",
         new Date(s.soldAt).toLocaleString(),
         s.productName,
         s.quantity,
@@ -1000,6 +1075,56 @@ const AdminPage: React.FC = () => {
 
     a.click();
 
+    URL.revokeObjectURL(url);
+  };
+
+  const exportSalesReport = async () => {
+    const { strToU8, zipSync } = await import('fflate');
+    const headers = ['Sale ID', 'Transaction ID', 'Date', 'Staff', 'Receipt', 'Customer', 'Product', 'Quantity', 'Sale total (KSh)'];
+    const rows: Array<Array<string | number>> = [headers, ...staffReportSales.map((sale) => [
+      formatRecordCode(sale.id),
+      formatRecordCode(sale.transactionId || sale.id),
+      new Date(sale.soldAt).toLocaleString(),
+      sale.staffName,
+      sale.receiptNumber || 'Legacy receipt',
+      sale.customerName,
+      sale.productName,
+      sale.quantity,
+      Number(sale.total || 0),
+    ]), ['REPORT TOTAL', '', '', '', '', '', '', '', reportTotals.revenue]];
+    const widths = [14, 18, 22, 24, 20, 24, 42, 12, 20];
+    const columnName = (index: number) => String.fromCharCode(65 + index);
+    const escapeXml = (value: string) => value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
+    })[character] || '');
+    const sheetRows = rows.map((row, rowIndex) => {
+      const cells = row.map((value, columnIndex) => {
+        if (value === '') return '';
+        const address = `${columnName(columnIndex)}${rowIndex + 1}`;
+        const isHeader = rowIndex === 0;
+        const isTotal = rowIndex === rows.length - 1;
+        const style = isHeader ? 1 : columnIndex === 8 ? (isTotal ? 4 : 3) : isTotal ? 2 : 0;
+        if (typeof value === 'number') return `<c r="${address}" s="${style}" t="n"><v>${value}</v></c>`;
+        return `<c r="${address}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+      }).join('');
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    }).join('');
+    const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:I${rows.length}"/><cols>${widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('')}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:I${Math.max(1, rows.length - 1)}"/></worksheet>`;
+    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;KSh&quot; #,##0.00"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF07533E"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="1" fillId="0" borderId="0" applyFont="1" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sales Report" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+    const archive = zipSync({
+      '[Content_Types].xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`),
+      '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      'xl/workbook.xml': strToU8(workbookXml),
+      'xl/_rels/workbook.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+      'xl/worksheets/sheet1.xml': strToU8(worksheet),
+      'xl/styles.xml': strToU8(styles),
+    });
+    const url = URL.createObjectURL(new Blob([archive], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `stetech-sales-${reportPeriod}-${reportPeriod === 'day' ? reportDate : reportDate.slice(0, 7)}.xlsx`;
+    anchor.click();
     URL.revokeObjectURL(url);
   };
 
@@ -1089,6 +1214,16 @@ const AdminPage: React.FC = () => {
       label: "Reports",
     },
     {
+      key: "projects",
+      icon: PackagePlus,
+      label: "Projects",
+    },
+    {
+      key: "staff",
+      icon: UserRound,
+      label: "Staff",
+    },
+    {
       key: "gallery",
       icon: Images,
       label: "Gallery",
@@ -1124,97 +1259,20 @@ const AdminPage: React.FC = () => {
 
   if (!loggedIn) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_right,_#064e3b,_#020617_55%)] px-4 py-10">
-        <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white p-8 shadow-2xl sm:p-10">
-          <div className="mb-8 text-center">
-            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-950 shadow-lg">
-              <img
-                src="/stetech solar.png"
-                alt="STETECH"
-                className="h-16 w-16 object-contain"
-              />
-            </div>
-
-            <p className="mt-6 text-xs font-black uppercase tracking-[0.25em] text-emerald-600">
-              STETECH Solar
-            </p>
-
-            <h1 className="mt-2 text-3xl font-black text-slate-950">
-              Admin Portal
-            </h1>
-
-            <p className="mt-2 text-sm text-slate-500">
-              Manage products, inventory, POS sales and your
-              website.
-            </p>
-          </div>
-
-          <form onSubmit={login} className="space-y-5">
-            {error && (
-              <p
-                role="alert"
-                className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-medium text-red-700"
-              >
-                {error}
-              </p>
-            )}
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-bold text-slate-700">Admin email</span>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="email"
-                  autoFocus
-                  autoComplete="username"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-4 pl-11 pr-4 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-50"
-                  placeholder="name@example.com"
-                />
-              </div>
-            </label>
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-bold text-slate-700">Admin password</span>
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-50"
-                  placeholder="Enter password"
-                />
-                <button
-                  type="button"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  title={showPassword ? "Hide password" : "Show password"}
-                  onClick={() => setShowPassword((visible) => !visible)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
-                >
-                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                </button>
-              </div>
-            </label>
-
-            <button
-              disabled={saving}
-              className="w-full rounded-2xl bg-slate-950 px-5 py-4 font-black text-white transition hover:bg-emerald-700 disabled:opacity-50"
-            >
-              {saving ? "Signing in..." : "Enter dashboard"}
-            </button>
-          </form>
-
-          <a
-            href="/"
-            className="mt-6 block text-center text-sm font-bold text-emerald-700 hover:text-emerald-800"
-          >
-            Return to website
-          </a>
-        </div>
+      <main className="staff-login-shell">
+        <section className="staff-login-panel">
+          <div className="staff-login-story"><img src="/stetech solar.png" alt="STETECH Solar Technology" /><p className="staff-login-kicker">STETECH SOLAR TECHNOLOGY</p><h1>One clear view of your whole business.</h1><p>Manage the team, keep projects current, and stay on top of stock and sales from one secure workspace.</p><div className="staff-login-points"><span>Projects & staff</span><span>Live sales & stock</span><span>Business reports</span></div></div>
+          <div className="staff-login-form-wrap"><div className="staff-login-form">
+            <p className="staff-login-overline">ADMIN WORKSPACE</p><h2>Welcome back</h2><p className="staff-login-intro">Sign in with your administrator account to continue.</p>
+            <form onSubmit={login} className="mt-7 space-y-4">
+              {error && <p role="alert" className="staff-login-alert">{error}</p>}
+              <label className="block text-sm font-bold">Admin email<input type="email" autoFocus autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-4 py-3 outline-none focus:border-emerald-700 focus:ring-4 focus:ring-emerald-50" placeholder="name@example.com" /></label>
+              <label className="block text-sm font-bold">Password<input type={showPassword ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-4 py-3 outline-none focus:border-emerald-700 focus:ring-4 focus:ring-emerald-50" placeholder="Enter password" /><button type="button" onClick={() => setShowPassword((visible) => !visible)} className="mt-1.5 text-xs font-bold text-emerald-800 hover:underline">{showPassword ? "Hide password" : "Show password"}</button></label>
+              <button disabled={saving} className="w-full rounded-lg bg-emerald-800 px-5 py-3.5 font-extrabold text-white transition hover:bg-emerald-900 disabled:opacity-50">{saving ? "Signing in..." : "Enter admin workspace"} <ArrowRight className="ml-2 inline h-4 w-4" /></button>
+            </form>
+            <div className="staff-admin-link"><a href="/">Return to website</a><span>·</span><a href="/staff">Staff portal</a></div>
+          </div></div>
+        </section>
       </main>
     );
   }
@@ -1411,6 +1469,10 @@ const AdminPage: React.FC = () => {
                   {tab === "reports" &&
                     "Business Reports"}
 
+                  {tab === "projects" && "Project Portfolio"}
+
+                  {tab === "staff" && "Staff Portal Access"}
+
                   {tab === "gallery" &&
                     "Website Gallery"}
                 </h1>
@@ -1421,6 +1483,7 @@ const AdminPage: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2">
+                <button onClick={() => setProfileOpen(true)} className="rounded-xl border border-slate-200 bg-white p-3 text-slate-500 hover:bg-emerald-50 hover:text-emerald-800" title="Edit profile" aria-label="Edit profile"><UserRound className="h-4 w-4" /></button>
                 <button
                   onClick={() => {
                     refresh();
@@ -2655,23 +2718,32 @@ const AdminPage: React.FC = () => {
                         </p>
                       </div>
 
-                      <button
-                        onClick={exportSales}
-                        disabled={!sales.length}
-                        className="rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"
-                      >
-                        <Download className="mr-2 inline h-4 w-4" />
-                        Export CSV
-                      </button>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input value={salesSearch} onChange={(e) => setSalesSearch(e.target.value)} placeholder="Receipt reference, customer, or phone" className="w-full rounded-xl border border-slate-200 py-2.5 pl-9 pr-3 text-sm sm:w-72" />
+                        </div>
+                        <button
+                          onClick={exportSales}
+                          disabled={!sales.length}
+                          className="rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"
+                        >
+                          <Download className="mr-2 inline h-4 w-4" />
+                          Export CSV
+                        </button>
+                      </div>
                     </div>
 
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[850px] text-left text-sm">
+                      <table className="w-full min-w-[1180px] text-left text-sm">
                         <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-400">
                           <tr>
                             <th className="px-5 py-4">
                               Date
                             </th>
+                            <th>Receipt reference</th>
+                            <th>Transaction ID</th>
+                            <th>Sale ID</th>
                             <th>Product</th>
                             <th>Customer</th>
                             <th>Qty</th>
@@ -2681,12 +2753,24 @@ const AdminPage: React.FC = () => {
                         </thead>
 
                         <tbody className="divide-y divide-slate-100">
-                          {sales.map((sale) => (
+                          {filteredSales.map((sale) => (
                             <tr key={sale.id}>
                               <td className="px-5 py-4 text-slate-500">
                                 {new Date(
                                   sale.soldAt
                                 ).toLocaleDateString()}
+                              </td>
+
+                              <td className="py-4 font-mono text-xs font-bold text-slate-700">
+                                {sale.receiptNumber || "Legacy receipt"}
+                              </td>
+
+                              <td className="py-4 font-mono text-xs font-bold text-slate-700">
+                                {formatRecordCode(sale.transactionId || sale.id)}
+                              </td>
+
+                              <td className="py-4 font-mono text-xs font-bold text-slate-700">
+                                {formatRecordCode(sale.id)}
                               </td>
 
                               <td className="py-4 font-bold">
@@ -2739,10 +2823,9 @@ const AdminPage: React.FC = () => {
                         </tbody>
                       </table>
 
-                      {!sales.length && (
+                      {!filteredSales.length && (
                         <div className="p-12 text-center text-slate-500">
-                          Your sales records will appear
-                          here.
+                          {salesSearch ? "No sales match that receipt reference or search." : "Your sales records will appear here."}
                         </div>
                       )}
                     </div>
@@ -2764,6 +2847,7 @@ const AdminPage: React.FC = () => {
                       <option value="month">Monthly</option>
                     </select>
                     <input type={reportPeriod === "day" ? "date" : "month"} value={reportPeriod === "day" ? reportDate : reportDate.slice(0, 7)} onChange={(e) => setReportDate(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5" />
+                    <button type="button" onClick={exportSalesReport} disabled={!reportSales.length} className="rounded-xl bg-emerald-800 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-emerald-900 disabled:opacity-40"><Download className="mr-2 inline h-4 w-4" />Export Excel</button>
                   </div>
                 </div>
 
@@ -2798,8 +2882,17 @@ const AdminPage: React.FC = () => {
                     ))}
                   </div>
                 </section>
+
+                <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 p-5"><h2 className="font-black">Staff sales records</h2><p className="mt-1 text-sm text-slate-500">Seller, customer, receipt and revenue for the selected period</p></div>
+                  <div className="overflow-x-auto"><table className="w-full min-w-[1040px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-5 py-3">Date</th><th>Transaction ID</th><th>Sale ID</th><th>Staff member</th><th>Receipt</th><th>Customer</th><th>Product</th><th>Qty</th><th className="pr-5 text-right">Sale total</th></tr></thead><tbody className="divide-y divide-slate-100">{staffReportSales.map((sale) => <tr key={sale.id}><td className="px-5 py-3 text-slate-500">{new Date(sale.soldAt).toLocaleString()}</td><td className="font-mono text-xs font-bold">{formatRecordCode(sale.transactionId || sale.id)}</td><td className="font-mono text-xs font-bold">{formatRecordCode(sale.id)}</td><td className="font-bold">{sale.staffName}</td><td className="font-mono text-xs">{sale.receiptNumber || 'Legacy'}</td><td>{sale.customerName}</td><td className="max-w-56 truncate">{sale.productName}</td><td>{sale.quantity}</td><td className="pr-5 text-right font-black">{formatKES(sale.total)}</td></tr>)}{!staffReportSales.length && <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-500">No sales were recorded during this period.</td></tr>}</tbody></table></div>
+                </section>
               </div>
             )}
+
+            {tab === "projects" && <ProjectManagement />}
+
+            {tab === "staff" && <StaffManagement />}
 
             {/* =====================================================
                 GALLERY
@@ -2813,6 +2906,8 @@ const AdminPage: React.FC = () => {
       {/* =========================================================
           CHECKOUT MODAL
       ========================================================== */}
+
+        {profileOpen && firebaseAuth.currentUser && <PortalProfileModal db={firebaseDb} user={firebaseAuth.currentUser} role="admin" onClose={() => setProfileOpen(false)} />}
 
       {checkoutOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
@@ -2960,7 +3055,7 @@ const AdminPage: React.FC = () => {
             </div>
             <div className="mt-5 rounded-2xl bg-slate-50 p-4">
               <p className="font-bold">{paymentTransaction.customerName}</p>
-              <p className="mt-1 text-sm text-slate-500">Transaction {paymentTransaction.id.slice(0, 8)}</p>
+              <p className="mt-1 text-sm text-slate-500">Transaction {formatRecordCode(paymentTransaction.id)}</p>
               <p className="mt-3 text-sm text-slate-500">Outstanding balance</p>
               <p className="text-2xl font-black text-amber-700">{formatKES(paymentTransaction.balanceDue)}</p>
             </div>

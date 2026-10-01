@@ -1,4 +1,18 @@
+import { useEffect, useState } from 'react';
 import { ArrowRight, MapPin } from 'lucide-react';
 import { Link } from 'react-router-dom';
-const projects=[{name:'Maranda High School',location:'Bondo, Siaya',size:'15 kVA solar PV',type:'Schools & institutions',image:'/maranda/1.jpg'},{name:'Home solar in Usenge',location:'Usenge, Siaya',size:'3 kVA solar PV',type:'Residential',image:'/Usenge/1.jpeg'},{name:'Port Victoria solar lighting',location:'Port Victoria',size:'600 W floodlights',type:'Solar lighting',image:'/port/1.jpeg'},{name:'Home solar in Simatwet',location:'Simatwet, Kitale',size:'5 kVA solar PV',type:'Residential',image:'/kitale/1.jpeg'},{name:'Kasigau home installation',location:'Kasigau, Taita Taveta',size:'3 kVA solar PV',type:'Residential',image:'/kasigau/1.jpeg'},{name:'Moi’s Bridge installation',location:'Moi’s Bridge',size:'15 kVA solar PV',type:'Residential',image:'/moi/1.jpeg'},{name:'Esibuye home installation',location:'Esibuye, Vihiga',size:'3 kVA solar PV',type:'Residential',image:'/sibuye/1.jpeg'}];
-export default function ProjectsPage(){return <main><section className="page-heading"><div className="site-container"><p className="eyebrow">SOLAR IN ACTION</p><h1>Real places. Brighter days.</h1><p>Explore some of the homes, schools and communities we’ve helped power across Kenya.</p></div></section><section className="site-container section-space"><div className="grid gap-7 md:grid-cols-2 lg:grid-cols-3">{projects.map(p=><article key={p.name} className="group overflow-hidden rounded-xl border border-slate-200 bg-white"><div className="overflow-hidden"><img src={p.image} alt={p.name} loading="lazy" className="h-64 w-full object-cover transition duration-500 group-hover:scale-105"/></div><div className="p-6"><p className="text-xs font-semibold text-emerald-700">{p.type} · {p.size}</p><h2 className="mt-3 text-xl font-bold">{p.name}</h2><p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><MapPin size={16}/>{p.location}</p><Link to={`/gallery?location=${encodeURIComponent(p.location)}`} className="text-link mt-6">View photos <ArrowRight size={17}/></Link></div></article>)}</div></section></main>;}
+import { projects as initialProjects } from '../data/projects';
+import { subscribeProjects } from '../data/projectStore';
+
+export default function ProjectsPage() {
+	const [projects, setProjects] = useState(initialProjects);
+	useEffect(() => subscribeProjects(setProjects), []);
+
+	return <main>
+		<section className="page-heading"><div className="site-container"><p className="eyebrow">SOLAR IN ACTION</p><h1>Real places. Brighter days.</h1><p>Explore some of the homes, schools and communities we’ve helped power across Kenya.</p></div></section>
+		<section className="site-container section-space"><div className="grid gap-7 md:grid-cols-2 lg:grid-cols-3">{projects.map((project) => <article key={project.slug} className="group overflow-hidden rounded-xl border border-slate-200 bg-white">
+			<div className="overflow-hidden"><img src={project.images[0]} alt={project.name} loading="lazy" className="h-64 w-full object-cover transition duration-500 group-hover:scale-105" /></div>
+			<div className="p-6"><p className="text-xs font-semibold text-emerald-700">{project.type} · {project.size} · {project.year ?? 'Year to be confirmed'}</p><h2 className="mt-3 text-xl font-bold">{project.name}</h2><p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><MapPin size={16} />{project.location}</p><Link to={`/projects/${project.slug}`} className="text-link mt-6">View project <ArrowRight size={17} /></Link></div>
+		</article>)}</div></section>
+	</main>;
+}

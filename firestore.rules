@@ -9,14 +9,50 @@ service cloud.firestore {
       );
     }
 
+    function isStaff() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff' &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+
+    function ownsRecord() {
+      return isStaff() && resource.data.staffUid == request.auth.uid;
+    }
+
+    function createsOwnRecord() {
+      return isStaff() && request.resource.data.staffUid == request.auth.uid;
+    }
+
     match /users/{userId} {
       allow get: if request.auth != null && request.auth.uid == userId;
-      allow list, write: if false;
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (request.auth != null && request.auth.uid == userId && request.resource.data.role == 'admin');
+      allow update: if isAdmin() || (request.auth != null && request.auth.uid == userId &&
+        (isStaff() || isAdmin()) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'email', 'phone', 'position']));
+      allow delete: if isAdmin();
+    }
+
+    match /staff/{staffId} {
+      allow get: if isAdmin() || (isStaff() && request.auth.uid == staffId);
+      allow list, create, delete: if isAdmin();
+      allow update: if isAdmin() || (isStaff() && request.auth.uid == staffId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'email', 'phone', 'position']));
+    }
+
+    match /projects/{projectId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /products/{productId} {
       allow read: if isAdmin() || resource.data.active == true;
-      allow create, update, delete: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isStaff() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock']) &&
+        request.resource.data.stock >= 0 &&
+        request.resource.data.stock <= resource.data.stock);
     }
 
     match /gallery/{imageId} {
@@ -30,19 +66,43 @@ service cloud.firestore {
     }
 
     match /sales/{saleId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read: if isAdmin() || ownsRecord();
+      allow create: if isAdmin() || createsOwnRecord();
+      allow update: if isAdmin() || (ownsRecord() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amountPaid', 'paymentStatus']));
+      allow delete: if isAdmin();
     }
 
     match /transactions/{transactionId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read: if isAdmin() || ownsRecord();
+      allow create: if isAdmin() || createsOwnRecord();
+      allow update: if isAdmin() || (ownsRecord() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amountPaid', 'balanceDue', 'paymentStatus']));
+      allow delete: if isAdmin();
     }
 
     match /payments/{paymentId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read: if isAdmin() || ownsRecord();
+      allow create: if isAdmin() || createsOwnRecord();
+      allow update, delete: if isAdmin();
     }
 
     match /inventoryMovements/{movementId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read: if isAdmin() || ownsRecord();
+      allow create: if isAdmin() || (createsOwnRecord() && request.resource.data.type == 'sale');
+      allow update, delete: if isAdmin();
+    }
+
+    match /receiptCounters/{period} {
+      allow read: if isAdmin() || isStaff();
+      allow create: if isAdmin() || (isStaff() && request.resource.data.lastNumber == 1);
+      allow update: if isAdmin() || (isStaff() && request.resource.data.lastNumber == resource.data.lastNumber + 1);
+      allow delete: if isAdmin();
+    }
+
+    match /receiptVerifications/{verificationId} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isAdmin() || createsOwnRecord();
+      allow delete: if isAdmin();
     }
 
     match /{document=**} {

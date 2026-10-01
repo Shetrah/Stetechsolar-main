@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, MapPin, X, ZoomIn } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
 import { type GalleryImage } from '../data/gallery';
 import { listGallery } from '../data/galleryStore';
 import Dialog from '../components/Dialog';
 export default function GalleryPage(){
-  const [params]=useSearchParams();const [images,setImages]=useState<GalleryImage[]>([]);const [category,setCategory]=useState('All');const [selected,setSelected]=useState<string|null>(null);const [loading,setLoading]=useState(true);const [error,setError]=useState('');
+  const [images,setImages]=useState<GalleryImage[]>([]);const [category,setCategory]=useState('All');const [selected,setSelected]=useState<string|null>(null);const [loading,setLoading]=useState(true);const [error,setError]=useState('');
   const load=()=>{setLoading(true);setError('');listGallery().then(setImages).catch(()=>setError('We couldn’t load the gallery. Please try again.')).finally(()=>setLoading(false));};
   useEffect(load,[]);
-  const filtered=images.filter(i=>(category==='All'||i.category===category)&&(!params.get('location')||i.location.toLowerCase().includes(params.get('location')!.toLowerCase())));
+  const filtered=images.filter(i=>category==='All'||i.category===category);
   const index=filtered.findIndex(i=>i.id===selected);const image=filtered[index];
   const move=(step:number)=>setSelected(filtered[(index+step+filtered.length)%filtered.length]?.id||null);
   useEffect(()=>{if(!selected)return;const key=(e:KeyboardEvent)=>{if(e.key==='ArrowLeft')setSelected(filtered[(index-1+filtered.length)%filtered.length]?.id||null);if(e.key==='ArrowRight')setSelected(filtered[(index+1)%filtered.length]?.id||null);};document.addEventListener('keydown',key);return()=>document.removeEventListener('keydown',key);},[selected,index,filtered]);

@@ -1,23 +1,35 @@
 import { initialProducts, type Product } from './products';
 import { Cog } from 'lucide-react';
 import { numericPrice } from './productFilters';
+import type { Auth } from 'firebase/auth';
+import type { Firestore } from 'firebase/firestore';
 import {
 	collection,
 	doc,
 	getDocs,
 	limit,
+	onSnapshot,
 	orderBy,
 	query,
 	runTransaction,
 	where,
 	writeBatch,
 } from 'firebase/firestore';
-import { firebaseAuth, firebaseDb, isAdminFirebaseUser, requireFirebaseAdmin } from './firebase';
+import { firebaseAuth, firebaseDb, isAdminFirebaseUser, requireFirebaseAdmin, requireFirebaseStaffOrAdmin } from './firebase';
+import { getSignedInStaffName } from './staffStore';
+
+export interface StoreAuthContext {
+	auth: Auth;
+	db: Firestore;
+	staffOnly?: boolean;
+}
 
 export type PaymentMethod = 'Cash' | 'M-Pesa' | 'Bank' | 'Credit';
 export interface SaleRecord {
 	id: string;
 	transactionId?: string;
+	receiptNumber?: string;
+	verificationId?: string;
 	productId: number;
 	productName: string;
 	quantity: number;
@@ -30,6 +42,8 @@ export interface SaleRecord {
 	location: string;
 	paymentStatus: 'paid' | 'pending' | 'partial';
 	paymentMethod?: PaymentMethod;
+	staffUid?: string;
+	staffName?: string;
 	soldAt: string;
 }
 
@@ -45,19 +59,27 @@ export interface InventoryMovement {
 	note: string;
 	referenceId?: string;
 	createdAt: string;
+	staffUid?: string;
+	staffName?: string;
 }
 
 export interface PaymentRecord {
 	id: string;
 	transactionId: string;
+	receiptNumber: string;
+	verificationId: string;
 	customerName: string;
 	method: Exclude<PaymentMethod, 'Credit'>;
 	amount: number;
 	createdAt: string;
+	staffUid?: string;
+	staffName?: string;
 }
 
 export interface TransactionSummary {
 	id: string;
+	receiptNumber: string;
+	verificationId: string;
 	customerName: string;
 	customerPhone: string;
 	location: string;
@@ -68,6 +90,22 @@ export interface TransactionSummary {
 	paymentMethod: PaymentMethod;
 	soldAt: string;
 	saleIds: string[];
+	staffUid?: string;
+	staffName?: string;
+}
+
+export interface ReceiptVerification {
+	id: string;
+	receiptNumber: string;
+	transactionId: string;
+	total: number;
+	amountPaid: number;
+	balanceDue: number;
+	paymentStatus: 'paid' | 'pending' | 'partial';
+	issuedAt: string;
+	type: 'sale' | 'payment';
+	staffUid?: string;
+	staffName?: string;
 }
 
 type SaleLine = Pick<SaleRecord, 'productId' | 'quantity' | 'unitPrice'>;
@@ -95,7 +133,25 @@ const collectionNames = {
 	transactions: 'transactions',
 	payments: 'payments',
 	movements: 'inventoryMovements',
+	receiptCounters: 'receiptCounters',
+	receiptVerifications: 'receiptVerifications',
 } as const;
+
+function receiptPeriod(date: Date) {
+	const parts = new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit' }).formatToParts(date);
+	const year = parts.find((part) => part.type === 'year')?.value || String(date.getUTCFullYear());
+	const month = parts.find((part) => part.type === 'month')?.value || String(date.getUTCMonth() + 1).padStart(2, '0');
+	return { period: `${year}-${month}`, year, month };
+}
+
+async function nextReceiptNumber(transaction: Parameters<Parameters<typeof runTransaction>[1]>[0], date: Date, db: Firestore = firebaseDb) {
+	const { period, year, month } = receiptPeriod(date);
+	const counterReference = doc(db, collectionNames.receiptCounters, period);
+	const snapshot = await transaction.get(counterReference);
+	const sequence = (Number(snapshot.data()?.lastNumber) || 0) + 1;
+	const receiptNumber = `STS-${year}-${month}-${String(sequence).padStart(4, '0')}`;
+	return { counterReference, sequence, receiptNumber };
+}
 
 const requireAdmin = requireFirebaseAdmin;
 
@@ -117,15 +173,69 @@ export const getSales = () => sales;
 export const getInventoryMovements = () => movements;
 export const getPayments = () => payments;
 export const getTransactions = () => transactions;
+export const formatRecordCode = (id: string | undefined) => (id || '').replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase().padEnd(6, '0');
 
-export async function syncProducts() {
+export function subscribeProducts(onChange: () => void, includeInactive = false, onError?: (error: Error) => void, db: Firestore = firebaseDb) {
+	const reference = collection(db, collectionNames.products);
+	const source = includeInactive ? reference : query(reference, where('active', '==', true));
+	return onSnapshot(source, (snapshot) => {
+		if (snapshot.empty) return;
+		catalogue = snapshot.docs.map((item) => hydrate(item.data() as Partial<Product>));
+		window.dispatchEvent(new Event('stetech-products-updated'));
+		onChange();
+	}, (error) => onError?.(error));
+}
+
+export function subscribeSales(onChange: () => void, onError?: (error: Error) => void, context: StoreAuthContext = { auth: firebaseAuth, db: firebaseDb }) {
+	let unsubscribe = () => undefined;
+	let cancelled = false;
+	const user = context.auth.currentUser;
+	if (!user) return () => undefined;
+	void (context.staffOnly ? Promise.resolve(false) : isAdminFirebaseUser(user, context.db)).then((admin) => {
+		if (cancelled) return;
+		const reference = collection(context.db, collectionNames.sales);
+		const source = admin
+			? query(reference, orderBy('soldAt', 'desc'), limit(10000))
+			: query(reference, where('staffUid', '==', user.uid), limit(10000));
+		unsubscribe = onSnapshot(source, (snapshot) => {
+			sales = snapshot.docs.map((item) => item.data() as SaleRecord).sort((first, second) => second.soldAt.localeCompare(first.soldAt));
+			window.dispatchEvent(new Event('stetech-sales-updated'));
+			onChange();
+		}, (error) => onError?.(error));
+	}).catch((error: unknown) => onError?.(error instanceof Error ? error : new Error('Unable to subscribe to sales.')));
+	return () => { cancelled = true; unsubscribe(); };
+}
+
+export function subscribeInventoryMovements(onChange: () => void, onError?: (error: Error) => void) {
+	return onSnapshot(query(collection(firebaseDb, collectionNames.movements), orderBy('createdAt', 'desc'), limit(10000)), (snapshot) => {
+		movements = snapshot.docs.map((item) => item.data() as InventoryMovement);
+		window.dispatchEvent(new Event('stetech-inventory-updated'));
+		onChange();
+	}, (error) => onError?.(error));
+}
+
+export function subscribePayments(onChange: () => void, onError?: (error: Error) => void) {
+	const stopPayments = onSnapshot(query(collection(firebaseDb, collectionNames.payments), orderBy('createdAt', 'desc'), limit(10000)), (snapshot) => {
+		payments = snapshot.docs.map((item) => item.data() as PaymentRecord);
+		window.dispatchEvent(new Event('stetech-payments-updated'));
+		onChange();
+	}, (error) => onError?.(error));
+	const stopTransactions = onSnapshot(query(collection(firebaseDb, collectionNames.transactions), orderBy('soldAt', 'desc'), limit(10000)), (snapshot) => {
+		transactions = snapshot.docs.map((item) => item.data() as TransactionSummary);
+		window.dispatchEvent(new Event('stetech-payments-updated'));
+		onChange();
+	}, (error) => onError?.(error));
+	return () => { stopPayments(); stopTransactions(); };
+}
+
+export async function syncProducts(context: StoreAuthContext = { auth: firebaseAuth, db: firebaseDb }) {
 	try {
-		const user = firebaseAuth.currentUser;
-		const admin = !!user && await isAdminFirebaseUser(user);
-		const reference = collection(firebaseDb, collectionNames.products);
+		const user = context.auth.currentUser;
+		const admin = !!user && !context.staffOnly && await isAdminFirebaseUser(user, context.db);
+		const reference = collection(context.db, collectionNames.products);
 		let snapshot = await getDocs(admin ? reference : query(reference, where('active', '==', true)));
 		if (admin && snapshot.empty) {
-			await seedProducts();
+			await seedProducts(context.db);
 			snapshot = await getDocs(reference);
 		}
 		if (!snapshot.empty) catalogue = snapshot.docs.map((item) => hydrate(item.data() as Partial<Product>));
@@ -135,10 +245,15 @@ export async function syncProducts() {
 	}
 }
 
-export async function syncSales() {
-	await requireAdmin();
-	const snapshot = await getDocs(query(collection(firebaseDb, collectionNames.sales), orderBy('soldAt', 'desc'), limit(10000)));
-	sales = snapshot.docs.map((item) => item.data() as SaleRecord);
+export async function syncSales(context: StoreAuthContext = { auth: firebaseAuth, db: firebaseDb }) {
+	const user = await requireFirebaseStaffOrAdmin(context.auth, context.db, context.staffOnly);
+	const admin = context.staffOnly ? false : await isAdminFirebaseUser(user, context.db);
+	const reference = collection(context.db, collectionNames.sales);
+	const source = admin
+		? query(reference, orderBy('soldAt', 'desc'), limit(10000))
+		: query(reference, where('staffUid', '==', user.uid), limit(10000));
+	const snapshot = await getDocs(source);
+	sales = snapshot.docs.map((item) => item.data() as SaleRecord).sort((first, second) => second.soldAt.localeCompare(first.soldAt));
 	window.dispatchEvent(new Event('stetech-sales-updated'));
 }
 
@@ -204,8 +319,9 @@ export async function addSales(input: {
 	location: string;
 	paymentMethod: PaymentMethod;
 	amountPaid: number;
-}) {
-	await requireAdmin();
+}, context: StoreAuthContext = { auth: firebaseAuth, db: firebaseDb }) {
+	const actor = await requireFirebaseStaffOrAdmin(context.auth, context.db, context.staffOnly);
+	const staffName = await getSignedInStaffName(actor.uid, actor.displayName || actor.email || 'Staff', context.db);
 	if (!input.items.length || input.items.length > 100) throw new Error('Add at least one product to the sale.');
 	const total = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
 	if (!Number.isFinite(input.amountPaid) || input.amountPaid < 0 || input.amountPaid > total) throw new Error('Amount received must be between zero and the sale total.');
@@ -214,10 +330,10 @@ export async function addSales(input: {
 	const soldAt = new Date().toISOString();
 	const lines = input.items.map((item) => ({ ...item, id: crypto.randomUUID() }));
 	const productIds = [...new Set(lines.map((line) => line.productId))];
-	const result = await runTransaction(firebaseDb, async (transaction) => {
+	const result = await runTransaction(context.db, async (transaction) => {
 		const products = new Map<number, { product: Product; reference: ReturnType<typeof doc> }>();
 		for (const productId of productIds) {
-			const reference = doc(firebaseDb, collectionNames.products, String(productId));
+			const reference = doc(context.db, collectionNames.products, String(productId));
 			const snapshot = await transaction.get(reference);
 			if (!snapshot.exists()) throw new Error('A product in this sale was not found.');
 			const product = hydrate(snapshot.data() as Partial<Product>);
@@ -233,6 +349,8 @@ export async function addSales(input: {
 			const product = products.get(productId)!.product;
 			if (quantity > Number(product.stock || 0)) throw new Error(`Only ${product.stock || 0} units of ${product.name} are available.`);
 		}
+		const nextReceipt = await nextReceiptNumber(transaction, new Date(soldAt), context.db);
+		const verificationId = crypto.randomUUID();
 		let remainingPaid = input.amountPaid;
 		const records: SaleRecord[] = lines.map((line) => {
 			const product = products.get(line.productId)!.product;
@@ -240,11 +358,12 @@ export async function addSales(input: {
 			const amountPaid = Math.min(lineTotal, remainingPaid);
 			remainingPaid -= amountPaid;
 			return {
-				id: line.id, transactionId, productId: product.id, productName: product.name,
+				id: line.id, transactionId, receiptNumber: nextReceipt.receiptNumber, verificationId, productId: product.id, productName: product.name,
 				quantity: line.quantity, unitPrice: line.unitPrice, unitCost: Number(product.costPrice) || 0,
 				total: lineTotal, amountPaid, customerName: input.customerName, customerPhone: input.customerPhone,
 				location: input.location, paymentStatus: amountPaid >= lineTotal ? 'paid' : amountPaid > 0 ? 'partial' : 'pending',
 				paymentMethod: input.paymentMethod, soldAt,
+				staffUid: actor.uid, staffName,
 			};
 		});
 		const stockMovements: InventoryMovement[] = [...quantities].map(([productId, quantity]) => {
@@ -254,27 +373,38 @@ export async function addSales(input: {
 				id: crypto.randomUUID(), productId, productName: product.name, type: 'sale', quantity,
 				delta: -quantity, stockBefore, stockAfter: stockBefore - quantity,
 				note: `Sale ${transactionId}`, referenceId: transactionId, createdAt: soldAt,
+				staffUid: actor.uid, staffName,
 			};
 		});
 		const paymentStatus = input.amountPaid >= total ? 'paid' : input.amountPaid > 0 ? 'partial' : 'pending';
 		const summary: TransactionSummary = {
-			id: transactionId, customerName: input.customerName, customerPhone: input.customerPhone,
+			id: transactionId, receiptNumber: nextReceipt.receiptNumber, verificationId, customerName: input.customerName, customerPhone: input.customerPhone,
 			location: input.location, total, amountPaid: input.amountPaid, balanceDue: total - input.amountPaid,
 			paymentStatus, paymentMethod: input.paymentMethod, soldAt, saleIds: records.map((record) => record.id),
+			staffUid: actor.uid, staffName,
 		};
 		const payment: PaymentRecord | undefined = input.amountPaid > 0 ? {
-			id: crypto.randomUUID(), transactionId, customerName: input.customerName,
+			id: crypto.randomUUID(), transactionId, receiptNumber: nextReceipt.receiptNumber, verificationId, customerName: input.customerName,
 			method: input.paymentMethod as Exclude<PaymentMethod, 'Credit'>, amount: input.amountPaid, createdAt: soldAt,
+			staffUid: actor.uid, staffName,
 		} : undefined;
+		const verification: ReceiptVerification = {
+			id: verificationId, receiptNumber: nextReceipt.receiptNumber, transactionId,
+			total, amountPaid: input.amountPaid, balanceDue: total - input.amountPaid,
+			paymentStatus, issuedAt: soldAt, type: 'sale',
+			staffUid: actor.uid, staffName,
+		};
 		for (const [productId, quantity] of quantities) {
 			const { product, reference } = products.get(productId)!;
 			transaction.update(reference, { stock: (Number(product.stock) || 0) - quantity });
 		}
-		records.forEach((record) => transaction.set(doc(firebaseDb, collectionNames.sales, record.id), record));
-		stockMovements.forEach((movement) => transaction.set(doc(firebaseDb, collectionNames.movements, movement.id), movement));
-		transaction.set(doc(firebaseDb, collectionNames.transactions, transactionId), summary);
-		if (payment) transaction.set(doc(firebaseDb, collectionNames.payments, payment.id), payment);
-		return { records, stockMovements, summary, payment };
+		records.forEach((record) => transaction.set(doc(context.db, collectionNames.sales, record.id), record));
+		stockMovements.forEach((movement) => transaction.set(doc(context.db, collectionNames.movements, movement.id), movement));
+		transaction.set(doc(context.db, collectionNames.transactions, transactionId), summary);
+		if (payment) transaction.set(doc(context.db, collectionNames.payments, payment.id), payment);
+		transaction.set(nextReceipt.counterReference, { lastNumber: nextReceipt.sequence });
+		transaction.set(doc(context.db, collectionNames.receiptVerifications, verificationId), verification);
+		return { records, stockMovements, summary, payment, verification };
 	});
 	const changedStock = new Map([...new Set(lines.map((line) => line.productId))].map((productId) => {
 		const sold = lines.filter((line) => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0);
@@ -303,6 +433,10 @@ export async function recordPayment(input: { transactionId: string; amount: numb
 		if (input.amount > summary.balanceDue) throw new Error(`Outstanding balance is ${formatKES(summary.balanceDue)}.`);
 		const saleSnapshots = [];
 		for (const saleId of summary.saleIds) saleSnapshots.push(await transaction.get(doc(firebaseDb, collectionNames.sales, saleId)));
+		const nextReceipt = await nextReceiptNumber(transaction, new Date());
+		const verificationReference = doc(firebaseDb, collectionNames.receiptVerifications, summary.verificationId);
+		const priorVerification = await transaction.get(verificationReference);
+		const paymentVerificationId = crypto.randomUUID();
 		const newAmountPaid = summary.amountPaid + input.amount;
 		let remainingPaid = newAmountPaid;
 		const updatedSales = saleSnapshots.filter((snapshot) => snapshot.exists()).map((snapshot) => {
@@ -318,11 +452,24 @@ export async function recordPayment(input: { transactionId: string; amount: numb
 			paymentStatus: newAmountPaid >= summary.total ? 'paid' : 'partial',
 		};
 		const payment: PaymentRecord = {
-			id: crypto.randomUUID(), transactionId: summary.id, customerName: summary.customerName,
+			id: crypto.randomUUID(), transactionId: summary.id, receiptNumber: nextReceipt.receiptNumber,
+			verificationId: paymentVerificationId, customerName: summary.customerName,
 			method: input.method, amount: input.amount, createdAt: new Date().toISOString(),
 		};
+		const issuedAt = payment.createdAt;
+		const paymentVerification: ReceiptVerification = {
+			id: paymentVerificationId, receiptNumber: nextReceipt.receiptNumber, transactionId: summary.id,
+			total: summary.total, amountPaid: newAmountPaid, balanceDue: updatedSummary.balanceDue,
+			paymentStatus: updatedSummary.paymentStatus, issuedAt, type: 'payment',
+		};
+		const initialVerification: ReceiptVerification = priorVerification.exists()
+			? { ...(priorVerification.data() as ReceiptVerification), amountPaid: newAmountPaid, balanceDue: updatedSummary.balanceDue, paymentStatus: updatedSummary.paymentStatus }
+			: { id: summary.verificationId, receiptNumber: summary.receiptNumber, transactionId: summary.id, total: summary.total, amountPaid: newAmountPaid, balanceDue: updatedSummary.balanceDue, paymentStatus: updatedSummary.paymentStatus, issuedAt: summary.soldAt, type: 'sale' };
 		transaction.set(transactionRef, updatedSummary);
 		transaction.set(doc(firebaseDb, collectionNames.payments, payment.id), payment);
+		transaction.set(nextReceipt.counterReference, { lastNumber: nextReceipt.sequence });
+		transaction.set(verificationReference, initialVerification);
+		transaction.set(doc(firebaseDb, collectionNames.receiptVerifications, paymentVerificationId), paymentVerification);
 		return { payment, summary: updatedSummary, updatedSales };
 	});
 	payments = [result.payment, ...payments].slice(0, 10000);

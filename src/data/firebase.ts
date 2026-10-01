@@ -1,6 +1,7 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, getIdTokenResult, type User } from 'firebase/auth';
+import { getAuth, getIdTokenResult, type Auth, type User } from 'firebase/auth';
 import { doc, getDoc, getFirestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -21,17 +22,41 @@ export const firebaseAuth = getAuth(app);
 export const firebaseDb = getFirestore(app);
 export const firebaseStorage = getStorage(app);
 
-export async function isAdminFirebaseUser(user: User) {
+const staffApp = getApps().some((item) => item.name === 'stetech-solar-staff')
+  ? getApp('stetech-solar-staff')
+  : initializeApp(firebaseConfig, 'stetech-solar-staff');
+
+export const staffFirebaseAuth = getAuth(staffApp);
+export const staffFirebaseDb = getFirestore(staffApp);
+
+export async function isAdminFirebaseUser(user: User, db: Firestore = firebaseDb) {
   const token = await getIdTokenResult(user);
   if (token.claims.admin === true) return true;
-  const userDocument = await getDoc(doc(firebaseDb, 'users', user.uid));
+  const userDocument = await getDoc(doc(db, 'users', user.uid));
   return userDocument.exists()
-    && userDocument.data().role === 'admin'
-    && String(userDocument.data().email || '').toLowerCase() === user.email?.toLowerCase();
+    && userDocument.data().role === 'admin';
 }
 
 export async function requireFirebaseAdmin() {
   const user = firebaseAuth.currentUser;
   if (!user || !(await isAdminFirebaseUser(user))) throw new Error('Sign in with an authorized Firebase admin account.');
+  return user;
+}
+
+export async function isStaffFirebaseUser(user: User, db: Firestore = firebaseDb) {
+  const userDocument = await getDoc(doc(db, 'users', user.uid));
+  return userDocument.exists()
+    && userDocument.data().role === 'staff'
+    && userDocument.data().active === true;
+}
+
+export async function requireFirebaseStaffOrAdmin(auth: Auth = firebaseAuth, db: Firestore = firebaseDb, staffOnly = false) {
+  const user = auth.currentUser;
+  const authorized = user && (staffOnly
+    ? await isStaffFirebaseUser(user, db)
+    : await isAdminFirebaseUser(user, db) || await isStaffFirebaseUser(user, db));
+  if (!user || !authorized) {
+    throw new Error('Sign in with an active STETECH staff account.');
+  }
   return user;
 }

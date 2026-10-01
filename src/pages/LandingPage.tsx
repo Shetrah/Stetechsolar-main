@@ -119,25 +119,21 @@ export default function LandingPage() {
             className="hero-photo"
             src="/solar-hero.png"
             alt="Black African solar technician working on a rooftop solar installation"
-            fetchPriority="high"
           />
 
           <div className="hero-shade" />
 
           <div className="site-container hero-content">
-            <p className="eyebrow light">CLEAN. RENEWABLE. YOURS.</p>
+            <p className="eyebrow light">SMART SOLAR FOR KENYA</p>
 
             <h1>
-              Solar energy
+              Power your day.
               <br />
-              for a <em>brighter</em>
-              <br />
-              <em>tomorrow.</em>
+              Own your <em>energy.</em>
             </h1>
 
             <p className="hero-description">
-              Power your home, business or farm with reliable solar solutions.
-              Designed for your needs. Installed by a team that cares.
+              Reliable solar systems, quality equipment and expert installation for homes, businesses, farms and institutions across Kenya.
             </p>
 
             <div className="hero-actions">
@@ -158,18 +154,20 @@ export default function LandingPage() {
               </button>
             </div>
 
-            <p className="hero-location">
-              Based in Kisumu. Powering lives across Kenya.
-            </p>
+            <div className="hero-proof" aria-label="STETECH experience">
+              <span><strong>500+</strong> successful installations</span>
+              <span><strong>Since 2012</strong> serving Kenya</span>
+              <span><strong>Kisumu</strong> local support</span>
+            </div>
           </div>
 
           <div className="hero-note">
             <Sun size={23} />
 
             <span>
-              GOOD ENERGY.
+              POWERING KENYA.
               <br />
-              <strong>Every day.</strong>
+              <strong>Made for real life.</strong>
             </span>
           </div>
         </section>
@@ -280,6 +278,12 @@ export default function LandingPage() {
                 <br />
                 Our expertise.
               </h2>
+
+              <p>
+                Kenya's premium solar energy solutions provider since 2012,
+                delivering sustainable and affordable clean energy solutions
+                with over 500+ Successful Installations.
+              </p>
 
               <p>
                 From the first conversation to the final connection,

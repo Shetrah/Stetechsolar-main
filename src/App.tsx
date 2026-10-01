@@ -8,22 +8,32 @@ import ProductsPage from "./pages/ProductsPage";
 import AboutPage from "./pages/AboutPage";
 import ServicesPage from "./pages/ServicesPage";
 import ProjectsPage from "./pages/ProjectsPage";
+import ProjectDetailPage from "./pages/ProjectDetailPage";
 import ContactPage from "./pages/ContactPage";
 import AdminPage from "./pages/AdminPage";
+import StaffPortal from "./pages/StaffPortal";
 import GalleryPage from "./pages/GalleryPage";
-import { syncProducts } from "./data/productStore";
+import ReceiptValidationPage from "./pages/ReceiptValidationPage";
+import { subscribeProducts, syncProducts } from "./data/productStore";
 
 const AnimatedRoutes: React.FC = () => {
   const location = useLocation();
   const isAdmin = location.pathname.startsWith("/admin");
+  const isStandalone = isAdmin || location.pathname === "/staff" || location.pathname === "/receipt/validate";
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [location.pathname]);
 
+  useEffect(() => {
+    if (location.pathname.startsWith("/admin") || location.pathname === "/staff") return;
+    void syncProducts();
+    return subscribeProducts(() => {});
+  }, [location.pathname]);
+
   return (
     <>
-      {!isAdmin && <Header />}
+      {!isStandalone && <Header />}
       <div key={location.pathname} className="page-wrapper animate-page-enter">
         <Routes location={location}>
           <Route path="/" element={<LandingPage />} />
@@ -31,20 +41,22 @@ const AnimatedRoutes: React.FC = () => {
           <Route path="/about" element={<AboutPage />} />
           <Route path="/services" element={<ServicesPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:slug" element={<ProjectDetailPage />} />
           <Route path="/gallery" element={<GalleryPage />} />
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/admin" element={<AdminPage />} />
+          <Route path="/staff" element={<StaffPortal />} />
+          <Route path="/receipt/validate" element={<ReceiptValidationPage />} />
           <Route path="*" element={<LandingPage />} />
         </Routes>
       </div>
-      {!isAdmin && <Footer />}
-      {!isAdmin && <ChatAssistant />}
+      {!isStandalone && <Footer />}
+      {!isStandalone && <ChatAssistant />}
     </>
   );
 };
 
 function App() {
-  useEffect(() => { void syncProducts(); }, []);
   return (
     <Router>
       <div className="min-h-screen bg-[#f5f8f5] text-slate-900 selection:bg-emerald-200 selection:text-emerald-950">
