@@ -6,11 +6,13 @@ import { getProductPrice, getProducts, syncProducts, formatKES } from '../data/p
 import { filterProducts, numericPrice } from '../data/productFilters';
 import Dialog from '../components/Dialog';
 type CartItem={product:Product;quantity:number};
+const requestedCategories=['SOLAR PANEL','INVERTERS','SOLAR BATTERIES','SOLAR WATER PUMPS','SOLAR LIGHTING','SOLAR CHARGE CONTROLLERS','SOLAR CABLES','SOLAR ACCESSORIES'];
+const representedProductCategories=['Solar Panels','Solar Inverters','Solar Batteries','Solar DC Pumps','Solar Floodlight and Streetlights','Solar Charge Controllers','Solar Accessories and Cables'];
 export default function ProductsPage(){
   const [params,setParams]=useSearchParams();const [products,setProducts]=useState(getProducts);const [category,setCategory]=useState(params.get('category')||'All Products');const [query,setQuery]=useState('');const [sort,setSort]=useState('featured');const [availability,setAvailability]=useState('all');const [priceLimit,setPriceLimit]=useState('all');const [selected,setSelected]=useState<Product|null>(null);const [cart,setCart]=useState<CartItem[]>([]);const [checkout,setCheckout]=useState(false);const [customer,setCustomer]=useState({name:'',phone:'',location:'',notes:''});
   useEffect(()=>{const refresh=()=>setProducts(getProducts());window.addEventListener('stetech-products-updated',refresh);const focus=()=>void syncProducts();window.addEventListener('focus',focus);void syncProducts();return()=>{window.removeEventListener('stetech-products-updated',refresh);window.removeEventListener('focus',focus);};},[]);
   useEffect(()=>setCategory(params.get('category')||'All Products'),[params]);
-  const categories=[...new Set(products.map(p=>p.category))].sort();
+  const categories=[...requestedCategories,...new Set(products.map(p=>p.category).filter(c=>!representedProductCategories.includes(c)))];
   const filtered=useMemo(()=>filterProducts(products,{category,query,sort,availability,priceLimit}),[products,category,query,sort,availability,priceLimit]);
   const setCat=(value:string)=>{setCategory(value);setParams(value==='All Products'?{}:{category:value},{replace:true});};
   const reset=()=>{setCat('All Products');setQuery('');setSort('featured');setAvailability('all');setPriceLimit('all');};

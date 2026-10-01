@@ -504,6 +504,23 @@ return ( <section id="about" className="bg-gray-50">
 
       </section>
 
+      <section aria-labelledby="official-partners-heading" className="mt-24">
+        <div className="text-center mb-10">
+          <h3 id="official-partners-heading" className="text-2xl md:text-3xl font-bold uppercase text-gray-900">
+            Our Official Partners and Brands
+          </h3>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white p-3 shadow-xl sm:p-5 md:p-7">
+          <img
+            src="/official-partners.jpg"
+            alt="Official STETECH partners and brands"
+            className="block h-auto w-full object-contain"
+            loading="lazy"
+          />
+        </div>
+      </section>
+
     </div>
   </div>
 
