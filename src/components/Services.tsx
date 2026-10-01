@@ -24,6 +24,7 @@ Thank you for your time.`;
     {
       icon: Sun,
       title: 'Solar PV Solutions',
+      image: '/services/solar power systems.jpg',
       description: 'Complete solar panel systems delivering clean energy for homes and businesses',
       features: ['High-efficiency solar modules', '25+ year manufacturer warranty', 'Grid-tied & hybrid systems', 'Off-grid solutions available'],
       color: 'bg-yellow-500'
@@ -31,6 +32,7 @@ Thank you for your time.`;
     {
       icon: Battery,
       title: 'Solar Backup Systems',
+      image: '/services/Battery backup.jpeg',
       description: 'Reliable backup power ensuring uninterrupted electricity during outages',
       features: ['24/7 emergency power supply', 'Advanced battery storage', 'Intelligent hybrid systems', 'Remote monitoring capability'],
       color: 'bg-blue-500'
@@ -38,6 +40,7 @@ Thank you for your time.`;
     {
       icon: Lightbulb,
       title: 'Solar Lighting',
+      image: '/services/Lighting & security.jpeg',
       description: 'Energy-efficient LED lighting for streets, gardens, and security applications',
       features: ['Advanced LED technology', 'Motion sensor activation', 'Remote control operation', 'All-weather durability'],
       color: 'bg-green-500'
@@ -45,6 +48,7 @@ Thank you for your time.`;
     {
       icon: Zap,
       title: 'Solar Water Heating',
+      image: '/services/Solar water solutions.jpeg',
       description: 'Efficient hot water systems reducing electricity costs by up to 70%',
       features: ['Flat plate & vacuum tube collectors', 'Heat pump integration', 'Commercial-grade systems', 'Maintenance-free operation'],
       color: 'bg-orange-500'
@@ -52,6 +56,7 @@ Thank you for your time.`;
     {
       icon: Home,
       title: 'Residential Solutions',
+      image: '/services/solar power systems.jpg',
       description: 'Customized solar solutions designed specifically for your home\'s energy needs',
       features: ['Free home energy assessment', 'Custom system design', 'Flexible financing options', 'Professional installation & support'],
       color: 'bg-purple-500'
@@ -59,6 +64,7 @@ Thank you for your time.`;
     {
       icon: Building,
       title: 'Commercial Solutions',
+      image: '/services/Maintenance & support.jpeg',
       description: 'Large-scale solar installations maximizing business energy savings and ROI',
       features: ['Industrial-grade systems', 'Comprehensive energy audits', 'Detailed ROI analysis', '24/7 maintenance support'],
       color: 'bg-indigo-500'
@@ -82,6 +88,12 @@ Thank you for your time.`;
             const IconComponent = service.icon;
             return (
               <div key={index} className="bg-gray-50 rounded-lg p-6 hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
+                <img
+                  src={service.image}
+                  alt={`${service.title} installation`}
+                  loading="lazy"
+                  className="mb-5 h-44 w-full rounded-lg object-cover"
+                />
                 <div className={`${service.color} rounded-full p-3 w-12 h-12 mb-4`}>
                   <IconComponent className="h-6 w-6 text-white" />
                 </div>

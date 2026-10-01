@@ -127,13 +127,13 @@ export default function LandingPage() {
             <p className="eyebrow light">SMART SOLAR FOR KENYA</p>
 
             <h1>
-              Power your day.
+              Solar Energy
               <br />
-              Own your <em>energy.</em>
+              for a brighter <br /> <em>tommorrow.</em>
             </h1>
 
             <p className="hero-description">
-              Reliable solar systems, quality equipment and expert installation for homes, businesses, farms and institutions across Kenya.
+              STETECH SOLAR TECHNOLOGY -K provides high-quality solar solutions for homes, businesses and industries. Harness the power of the sun and enjoy clean, reliable and affordable energy.
             </p>
 
             <div className="hero-actions">
@@ -157,7 +157,8 @@ export default function LandingPage() {
             <div className="hero-proof" aria-label="STETECH experience">
               <span><strong>500+</strong> successful installations</span>
               <span><strong>Since 2012</strong> serving Kenya</span>
-              <span><strong>Kisumu</strong> local support</span>
+              <span><strong>100%</strong> customer satisfaction</span>
+            
             </div>
           </div>
 
