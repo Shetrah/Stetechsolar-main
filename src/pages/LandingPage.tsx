@@ -14,7 +14,6 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { initialProducts } from '../data/products';
 
 const VIDEO_ID = 'HbJBgEQ-Fiw';
 
@@ -25,30 +24,35 @@ const solutions = [
   {
     title: 'Solar panels',
     category: 'Solar Panels',
+    image: '/solutions/solar power systems.jpg',
     icon: Sun,
     text: 'Put the sun to work.',
   },
   {
     title: 'Inverters',
     category: 'Solar Inverters',
+    image: '/solutions/Inverters.jpg',
     icon: Zap,
     text: 'Power you can depend on.',
   },
   {
     title: 'Solar batteries',
     category: 'Solar Batteries',
+    image: '/solutions/Solar batteries.jpg',
     icon: BatteryCharging,
     text: 'Save energy for later.',
   },
   {
     title: 'Water pumping',
     category: 'Solar DC Pumps',
+    image: '/solutions/Water pumping.jpg',
     icon: Droplets,
     text: 'Water, powered by sunshine.',
   },
   {
     title: 'Solar lighting',
     category: 'Solar Floodlight and Streetlights',
+    image: '/services/Lighting & security.jpeg',
     icon: Lightbulb,
     text: 'Brighter nights. Less cost.',
   },
@@ -124,7 +128,7 @@ export default function LandingPage() {
           <div className="hero-shade" />
 
           <div className="site-container hero-content">
-            <p className="eyebrow light">SMART SOLAR FOR KENYA</p>
+            <p className="eyebrow light">CLEAN | RENEWABLE | SUSTAINABLE</p>
 
             <h1>
               Solar Energy
@@ -210,13 +214,7 @@ export default function LandingPage() {
             </div>
 
             <div className="solutions-grid">
-              {solutions.map(
-                ({ title, category, icon: Icon, text }) => {
-                  const product = initialProducts.find(
-                    (item) => item.category === category
-                  );
-
-                  return (
+              {solutions.map(({ title, category, image, icon: Icon, text }) => (
                     <a
                       key={title}
                       href={`/products?category=${encodeURIComponent(
@@ -225,13 +223,7 @@ export default function LandingPage() {
                       className="solution-card"
                     >
                       <div className="solution-image">
-                        {product && (
-                          <img
-                            src={product.image}
-                            alt={title}
-                            loading="lazy"
-                          />
-                        )}
+                        <img src={image} alt={title} loading="lazy" />
 
                         <span>
                           <Icon size={23} />
@@ -246,9 +238,7 @@ export default function LandingPage() {
                         <ArrowRight size={18} />
                       </div>
                     </a>
-                  );
-                }
-              )}
+              ))}
             </div>
           </div>
         </section>
