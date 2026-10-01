@@ -154,9 +154,10 @@ input, select, textarea { max-width: 100%; }
 .solar-cta > .site-container { display: flex; align-items: center; justify-content: space-between; gap: 30px; }
 .solar-cta h2 { font-size: clamp(28px,3vw,39px); font-weight: 800; line-height: 1.25; letter-spacing: -1px; margin: 0; }
 
-.page-heading { padding-block: 56px 42px; background: #edf5ef; border-bottom: 1px solid #dbe8de; }
-.page-heading h1 { font-size: clamp(36px,4vw,54px); font-weight: 800; letter-spacing: -2px; line-height: 1.12; margin: 0; }
-.page-heading p:not(.eyebrow) { color: #60726b; margin-top: 15px; max-width: 640px; line-height: 1.7; }
+.page-heading { padding-block: 56px 42px; background: linear-gradient(110deg, #24325d 0%, #394c72 52%, #4a675c 100%); border-bottom: 1px solid #53675f; }
+.page-heading .eyebrow { color: #8ef0b2; }
+.page-heading h1 { color: white; font-size: clamp(36px,4vw,54px); font-weight: 800; letter-spacing: -2px; line-height: 1.12; margin: 0; }
+.page-heading p:not(.eyebrow) { color: #e4ece8; margin-top: 15px; max-width: 640px; line-height: 1.7; }
 .site-footer { background: #052e28; color: #d4e2da; padding-block: 40px 22px; }
 .footer-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 60px; }
 .footer-grid h3 { font-weight: 700; color: white; margin-bottom: 15px; }
