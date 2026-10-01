@@ -20,15 +20,14 @@ const About: React.FC = () => {
           <div>
             <h3 className="text-2xl font-bold text-gray-900 mb-6">Who We Are</h3>
             <p className="text-gray-600 mb-4 leading-relaxed">
-              STETECH Solar Technology is a regionally recognized leading solar energy solutions provider, 
-              specializing in high efficiency PV module comprehensive EPC solutions. We are 100% Kenyan owned 
-              and have over 12 years of experience in developing solar solutions, project management, innovation, 
-              and finance options.
+              STETECH SOLAR TECHNOLOGY -K is one of the leading provider of energy solutions since
+              2012. We are dedicated to delivering sustainable and reliable clean energy solutions
+              across Kenya and it's neighbouring Eastern African countries.
             </p>
             <p className="text-gray-600 mb-6 leading-relaxed">
-              We have successfully completed 500+ installations ranging from residential homes 
-              to utility-scale projects up to 10 MW. Every project is delivered through the highest 
-              standards of performance, quality, and customer service excellence.
+             We take pride in our 10+ years commitment to innovation, quality, durability, efficiency,
+             timely service delivering, and above all, ensuring our ccustomers' satifaction. We offer a
+             wide range of products, services and solutions tailored to meet the diverse energy needs of our customers.
             </p>
             <div className="flex flex-wrap gap-4">
               <div className="bg-blue-100 text-blue-800 px-4 py-2 rounded-full text-sm font-medium">
